@@ -1,0 +1,81 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+{% extends "base.html" %}
+{% block content %}
+<div class="grid-x grid-margin-x">
+
+  {# ── Discovery mode ───────────────────────────────────────── #}
+  <div class="cell large-6">
+    <div class="card">
+      <div class="card-divider">
+        <i class="fa-solid fa-magnifying-glass-location"></i> Discovery Mode
+      </div>
+      <div class="card-section">
+        <form method="post" action="/settings/discovery-mode">
+          <label>How prefixes are discovered when adding or re-discovering sites
+            <select name="mode">
+              {% for key, label in discovery_modes %}
+              <option value="{{ key }}" {% if key == discovery_mode %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button class="button primary" type="submit">
+            <i class="fa-solid fa-floppy-disk"></i> Save
+          </button>
+        </form>
+        <div class="callout secondary" style="margin-top:0.85rem;margin-bottom:0;font-size:0.83rem">
+          <p style="margin:0 0 0.4rem"><i class="fa-solid fa-star" style="color:#f59e0b"></i> <strong>RIPE Stat network-info</strong> — exact BGP prefix for each IP. Best for most domains.</p>
+          <p style="margin:0 0 0.4rem"><i class="fa-solid fa-book" style="color:#3b82f6"></i> <strong>RDAP netblock</strong> — allocation block from regional registries (ARIN, RIPE, APNIC…).</p>
+          <p style="margin:0"><i class="fa-solid fa-triangle-exclamation" style="color:#ef4444"></i> <strong>ASN all prefixes</strong> — every prefix in the ASN. May return thousands of routes for CDNs.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Stats ────────────────────────────────────────────────── #}
+  <div class="cell large-6">
+    <div class="card">
+      <div class="card-divider">
+        <i class="fa-solid fa-chart-bar"></i> Database Stats
+      </div>
+      <div class="card-section">
+        <div style="display:flex;gap:2rem;flex-wrap:wrap;padding:0.5rem 0">
+          <div class="stat-block">
+            <div class="stat-number">{{ sites_count }}</div>
+            <div class="stat-label"><i class="fa-solid fa-layer-group"></i> Sites</div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-number">{{ prefixes_count }}</div>
+            <div class="stat-label"><i class="fa-solid fa-list"></i> Prefixes</div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-number">{{ next_hops_count }}</div>
+            <div class="stat-label"><i class="fa-solid fa-right-left"></i> Next Hops</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Maintenance ──────────────────────────────────────────── #}
+  <div class="cell large-6">
+    <div class="card">
+      <div class="card-divider">
+        <i class="fa-solid fa-screwdriver-wrench"></i> Maintenance
+      </div>
+      <div class="card-section">
+        <p style="margin-bottom:0.6rem;color:#6b7280;font-size:0.88rem">
+          Remove inactive prefix records from the database. Active BGP routes are not affected.
+        </p>
+        <form method="post" action="/settings/purge-inactive"
+              onsubmit="return confirm('Purge all inactive prefix records?')">
+          <button class="button alert hollow" type="submit">
+            <i class="fa-solid fa-trash-can"></i> Purge inactive prefixes
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+

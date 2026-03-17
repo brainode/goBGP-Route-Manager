@@ -1,0 +1,6 @@
+data/*.db
+.claude/
+app/__pycache__/
+.env
+error.log
+venv/

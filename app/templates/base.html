@@ -1,0 +1,37 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ title }} - goBGP Route Manager</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/foundation-sites@6.8.1/dist/css/foundation.min.css" crossorigin="anonymous" />
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" crossorigin="anonymous" />
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <nav class="app-nav">
+      <div class="app-nav-inner">
+        <a class="app-nav-brand" href="/sites">
+          <i class="fa-solid fa-network-wired"></i>
+          goBGP Route Manager
+        </a>
+        <ul class="app-nav-menu">
+          <li><a href="/sites"><i class="fa-solid fa-layer-group"></i> Sites</a></li>
+          <li><a href="/next-hops"><i class="fa-solid fa-right-left"></i> Next Hops</a></li>
+          <li><a href="/gobgp-status"><i class="fa-solid fa-circle-dot"></i> GoBGP Status</a></li>
+          <li><a href="/settings"><i class="fa-solid fa-gear"></i> Settings</a></li>
+        </ul>
+      </div>
+    </nav>
+
+    <main class="grid-container fluid page-wrap">
+      {% block content %}{% endblock %}
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/foundation-sites@6.8.1/dist/js/foundation.min.js"></script>
+    <script>$(document).foundation();</script>
+  </body>
+</html>
+

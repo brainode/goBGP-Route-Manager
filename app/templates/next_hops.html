@@ -1,0 +1,77 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+{% extends "base.html" %}
+{% block content %}
+<div class="grid-x grid-margin-x">
+
+  {# ── Add Next Hop form ─────────────────────────────────────── #}
+  <div class="cell large-4">
+    <div class="card">
+      <div class="card-divider"><i class="fa-solid fa-plus"></i> Add Next Hop</div>
+      <div class="card-section">
+        <form method="post" action="/next-hops">
+          <label>IP Address
+            <input type="text" name="ip" placeholder="10.10.24.2" required autocomplete="off" />
+          </label>
+          <label>Name <span class="subtle">(optional)</span>
+            <input type="text" name="name" placeholder="Core router" />
+          </label>
+          <button class="button success expanded" type="submit">
+            <i class="fa-solid fa-plus"></i> Create Next Hop
+          </button>
+        </form>
+      </div>
+    </div>
+    <div class="callout secondary" style="font-size:0.84rem;margin-top:0.6rem">
+      <i class="fa-solid fa-circle-info"></i>
+      <strong>Next hops</strong> are the BGP next-hop IPs used when announcing routes. Each site needs exactly one.
+    </div>
+  </div>
+
+  {# ── Next hops table ───────────────────────────────────────── #}
+  <div class="cell large-8">
+    {% if not next_hops %}
+    <div class="callout secondary">
+      <i class="fa-solid fa-circle-info"></i> No next hops configured yet.
+    </div>
+    {% else %}
+    <table class="hover stack">
+      <thead>
+        <tr>
+          <th>IP Address</th>
+          <th>Name</th>
+          <th>Sites using</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for hop in next_hops %}
+        {% set sites_count = hop.sites | length %}
+        <tr>
+          <td><code>{{ hop.ip }}</code></td>
+          <td>
+            {% if hop.name %}{{ hop.name }}{% else %}<span class="subtle">—</span>{% endif %}
+          </td>
+          <td>
+            <span class="label {% if sites_count > 0 %}primary{% else %}secondary{% endif %}">
+              <i class="fa-solid fa-layer-group"></i> {{ sites_count }}
+            </span>
+          </td>
+          <td>
+            <form method="post" action="/next-hops/{{ hop.id }}/delete"
+                  onsubmit="return confirm('Delete next hop {{ hop.ip }}?')">
+              <button class="button tiny alert hollow" type="submit"
+                      {% if sites_count > 0 %}disabled title="In use — remove sites first"{% endif %}>
+                <i class="fa-solid fa-trash"></i> Delete
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}
+

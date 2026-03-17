@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-2.0-only
+[global.config]
+  as = 65000
+  router-id = "10.10.24.2"
+
+# Add your neighbors here, example:
+[[neighbors]]
+  [neighbors.config]
+    neighbor-address = "10.10.24.1"
+    peer-as = 64512
+
+
