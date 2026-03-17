@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: GPL-2.0-only
+x-gobgp-common: &gobgp-common
+  build:
+    context: .
+    dockerfile: Dockerfile.gobgp
+  entrypoint: ["/usr/local/bin/gobgpd"]
+  command: ["-f", "/etc/gobgp/gobgpd.toml"]
+  restart: unless-stopped
+
+x-route-manager-common: &route-manager-common
+  build: .
+  env_file:
+    - .env
+  volumes:
+    - type: bind
+      source: ${DB_HOST_DIR}
+      target: /data
+      bind:
+        create_host_path: false
+  restart: unless-stopped
+
+services:
+  gobgp-dev:
+    <<: *gobgp-common
+    container_name: gobgp-dev
+    profiles: ["dev"]
+    ports:
+      - "50051:50051"
+      - "179:179/tcp"
+    networks:
+      default:
+        aliases:
+          - gobgp
+
+  route-manager-dev:
+    <<: *route-manager-common
+    container_name: route-manager-dev
+    profiles: ["dev"]
+    depends_on:
+      - gobgp-dev
+    ports:
+      - "8000:8000"
+
+  gobgp-prod:
+    <<: *gobgp-common
+    container_name: gobgp-prod
+    profiles: ["prod"]
+    network_mode: host
+
+  route-manager-prod:
+    <<: *route-manager-common
+    container_name: route-manager-prod
+    profiles: ["prod"]
+    depends_on:
+      - gobgp-prod
+    network_mode: host
+    environment:
+      GOBGP_HOST: 127.0.0.1
+

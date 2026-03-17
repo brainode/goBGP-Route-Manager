@@ -1,0 +1,189 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+{% extends "base.html" %}
+{% block content %}
+<div class="grid-x grid-margin-x">
+
+  {# ── Add Site form ─────────────────────────────────────────── #}
+  <div class="cell large-4">
+    <div class="card">
+      <div class="card-divider"><i class="fa-solid fa-plus"></i> Add Site</div>
+      <div class="card-section">
+
+        {# ── Site type toggle ──────────────────────────────── #}
+        <div class="button-group" style="margin-bottom:0.9rem">
+          <button type="button" class="button small primary" id="btn-domain"
+                  onclick="setSiteType('domain')">
+            <i class="fa-solid fa-globe"></i> By Domain
+          </button>
+          <button type="button" class="button small hollow secondary" id="btn-manual"
+                  onclick="setSiteType('manual')">
+            <i class="fa-solid fa-pen-to-square"></i> Manual Group
+          </button>
+        </div>
+
+        <form method="post" action="/sites">
+          <label id="domain-label">Domain
+            <input type="text" name="domain" id="domain-input"
+                   placeholder="youtube.com" required autocomplete="off" />
+          </label>
+          <label>Next hop
+            <select name="next_hop_id" required>
+              {% for hop in next_hops %}
+              <option value="{{ hop.id }}">{{ hop.ip }}{% if hop.name %} — {{ hop.name }}{% endif %}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <div style="margin-bottom:0.8rem">
+            <label style="display:inline-flex;align-items:center;gap:0.4rem;margin-bottom:0.4rem;cursor:pointer">
+              <input type="checkbox" name="enabled" checked /> Enabled on create
+            </label><br>
+            <label style="display:inline-flex;align-items:center;gap:0.4rem;cursor:pointer" id="discover-label">
+              <input type="checkbox" name="discover" id="discover-checkbox" checked /> Auto-discover prefixes
+            </label>
+          </div>
+          <button class="button success expanded" type="submit">
+            <i class="fa-solid fa-plus"></i> Create Site
+          </button>
+        </form>
+
+        <script>
+          function setSiteType(type) {
+            const isManual = type === 'manual';
+            const lbl = document.getElementById('domain-label');
+            const inp = document.getElementById('domain-input');
+            lbl.childNodes[0].textContent = isManual ? 'Name ' : 'Domain';
+            inp.placeholder = isManual ? 'Internal DC-1 routes' : 'youtube.com';
+            const discoverLabel = document.getElementById('discover-label');
+            const discoverCb   = document.getElementById('discover-checkbox');
+            discoverLabel.style.display = isManual ? 'none' : '';
+            discoverCb.disabled = isManual;
+            if (isManual) discoverCb.checked = false;
+            else discoverCb.checked = true;
+            document.getElementById('btn-domain').className =
+              isManual ? 'button small hollow secondary' : 'button small primary';
+            document.getElementById('btn-manual').className =
+              isManual ? 'button small primary' : 'button small hollow secondary';
+          }
+        </script>
+
+        {% if not next_hops %}
+        <div class="callout warning" style="margin-top:0.8rem;margin-bottom:0;font-size:0.87rem">
+          <i class="fa-solid fa-triangle-exclamation"></i>
+          No next hops. <a href="/next-hops">Add one first.</a>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  {# ── Sites table ────────────────────────────────────────────── #}
+  <div class="cell large-8">
+    {% if not sites %}
+    <div class="callout secondary">
+      <i class="fa-solid fa-circle-info"></i>
+      No sites yet. Add your first site using the form on the left.
+    </div>
+    {% else %}
+    <table class="hover stack">
+      <thead>
+        <tr>
+          <th>Domain / Name</th>
+          <th>ASN</th>
+          <th>Prefixes</th>
+          <th>Next hop</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for site in sites %}
+        {% set active_prefixes = site.prefixes | selectattr('is_active') | list %}
+        <tr class="site-row" data-target="site-prefixes-{{ site.id }}">
+          <td>
+            <a href="/sites/{{ site.id }}" style="font-weight:600">{{ site.domain }}</a>
+          </td>
+          <td>
+            {% if site.asn %}
+            <span class="label primary">{{ site.asn }}</span>
+            {% else %}<span class="subtle">—</span>{% endif %}
+          </td>
+          <td>
+            <span style="font-weight:600">{{ active_prefixes | length }}</span>
+          </td>
+          <td><code>{{ site.next_hop.ip }}</code></td>
+          <td>
+            {% if site.enabled %}
+            <span class="label success"><i class="fa-solid fa-circle-check"></i> Active</span>
+            {% else %}
+            <span class="label alert"><i class="fa-solid fa-circle-pause"></i> Paused</span>
+            {% endif %}
+          </td>
+          <td>
+            <div class="action-group">
+              <form method="post" action="/sites/{{ site.id }}/toggle">
+                {% if site.enabled %}
+                <button class="button tiny secondary" type="submit">
+                  <i class="fa-solid fa-pause"></i> Pause
+                </button>
+                {% else %}
+                <button class="button tiny success" type="submit">
+                  <i class="fa-solid fa-play"></i> Enable
+                </button>
+                {% endif %}
+              </form>
+              <form method="post" action="/sites/{{ site.id }}/rediscover">
+                <button class="button tiny warning" type="submit">
+                  <i class="fa-solid fa-rotate"></i> Rediscover
+                </button>
+              </form>
+              <form method="post" action="/sites/{{ site.id }}/delete"
+                    onsubmit="return confirm('Delete site and withdraw all routes?')">
+                <button class="button tiny alert hollow" type="submit">
+                  <i class="fa-solid fa-trash"></i>
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        <tr id="site-prefixes-{{ site.id }}" class="site-prefixes-row hidden">
+          <td colspan="6">
+            {% if active_prefixes %}
+            <div class="prefixes-wrap" style="padding:0.5rem 0">
+              <strong style="font-size:0.85rem;color:#374151">
+                <i class="fa-solid fa-list"></i> Active prefixes
+              </strong>
+              <div style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.4rem">
+                {% for p in active_prefixes | sort(attribute='cidr') %}
+                <span style="display:inline-flex;align-items:center;gap:0.3rem;background:#f0f4ff;border:1px solid #c7d2fe;border-radius:5px;padding:0.2rem 0.55rem;font-size:0.82rem">
+                  <code style="background:none;border:none;padding:0;color:#1e40af">{{ p.cidr }}</code>
+                  <span class="label {% if p.source == 'discovery' %}primary{% else %}secondary{% endif %}" style="margin:0">{{ p.source }}</span>
+                </span>
+                {% endfor %}
+              </div>
+            </div>
+            {% else %}
+            <span class="subtle"><i class="fa-solid fa-circle-info"></i> No active prefixes for this site.</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+</div>
+<script>
+  document.querySelectorAll(".site-row").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("form,button,a,input,select,label")) return;
+      const targetId = row.dataset.target;
+      if (!targetId) return;
+      const details = document.getElementById(targetId);
+      if (!details) return;
+      details.classList.toggle("hidden");
+    });
+  });
+</script>
+{% endblock %}
+

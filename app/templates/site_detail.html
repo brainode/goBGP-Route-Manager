@@ -1,0 +1,122 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+{% extends "base.html" %}
+{% block content %}
+<div class="grid-x grid-margin-x">
+
+  {# ── Left panel: info + add prefix ─────────────────────────── #}
+  <div class="cell large-4">
+    <div class="card">
+      <div class="card-divider">
+        <i class="fa-solid fa-globe"></i> {{ site.domain }}
+      </div>
+      <div class="card-section">
+        <div class="status-row">
+          {% if site.enabled %}
+          <span class="label success"><i class="fa-solid fa-circle-check"></i> Active</span>
+          {% else %}
+          <span class="label alert"><i class="fa-solid fa-circle-pause"></i> Paused</span>
+          {% endif %}
+          {% if site.asn %}
+          <span class="label primary"><i class="fa-solid fa-network-wired"></i> {{ site.asn }}</span>
+          {% endif %}
+        </div>
+        <p style="margin:0.5rem 0 0.15rem;font-size:0.88rem;color:#374151">
+          <i class="fa-solid fa-right-left" style="color:var(--muted);width:16px"></i>
+          <strong>Next hop:</strong> <code>{{ site.next_hop.ip }}</code>
+          {% if site.next_hop.name %}<span class="subtle">— {{ site.next_hop.name }}</span>{% endif %}
+        </p>
+        <div class="action-group" style="margin-top:0.85rem">
+          <form method="post" action="/sites/{{ site.id }}/toggle">
+            {% if site.enabled %}
+            <button class="button small secondary" type="submit">
+              <i class="fa-solid fa-pause"></i> Pause
+            </button>
+            {% else %}
+            <button class="button small success" type="submit">
+              <i class="fa-solid fa-play"></i> Enable
+            </button>
+            {% endif %}
+          </form>
+          <form method="post" action="/sites/{{ site.id }}/rediscover">
+            <button class="button small warning" type="submit">
+              <i class="fa-solid fa-rotate"></i> Rediscover
+            </button>
+          </form>
+          <form method="post" action="/sites/{{ site.id }}/delete"
+                onsubmit="return confirm('Delete site and withdraw all routes?')">
+            <button class="button small alert hollow" type="submit">
+              <i class="fa-solid fa-trash"></i> Delete
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:0.85rem">
+      <div class="card-divider"><i class="fa-solid fa-plus"></i> Add Prefix</div>
+      <div class="card-section">
+        <form method="post" action="/sites/{{ site.id }}/prefixes">
+          <label>CIDR
+            <input type="text" name="cidr" placeholder="203.0.113.0/24" required autocomplete="off" />
+          </label>
+          <button class="button success expanded" type="submit">
+            <i class="fa-solid fa-plus"></i> Add Prefix
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {# ── Right panel: prefix table ──────────────────────────────── #}
+  <div class="cell large-8">
+    {% if not site.prefixes %}
+    <div class="callout secondary">
+      <i class="fa-solid fa-circle-info"></i>
+      No prefixes yet. Add one using the form on the left.
+    </div>
+    {% else %}
+    <table class="hover stack">
+      <thead>
+        <tr>
+          <th>CIDR</th>
+          <th>Source</th>
+          <th>Active</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in site.prefixes | sort(attribute='cidr') %}
+        <tr>
+          <td><code>{{ p.cidr }}</code></td>
+          <td>
+            {% if p.source == 'discovery' %}
+            <span class="label primary"><i class="fa-solid fa-magnifying-glass"></i> discovery</span>
+            {% else %}
+            <span class="label secondary"><i class="fa-solid fa-pen"></i> manual</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if p.is_active %}
+            <span class="label success">yes</span>
+            {% else %}
+            <span class="label" style="background:#e5e7eb;color:#6b7280">no</span>
+            {% endif %}
+          </td>
+          <td>
+            <form method="post" action="/prefixes/{{ p.id }}/delete"
+                  onsubmit="return confirm('Remove {{ p.cidr }} and withdraw route?')">
+              <button class="button tiny alert hollow" type="submit">
+                <i class="fa-solid fa-trash"></i> Remove
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+  </div>
+
+</div>
+{% endblock %}
+

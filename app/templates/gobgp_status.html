@@ -1,0 +1,100 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+{% extends "base.html" %}
+{% block content %}
+<div class="grid-x grid-margin-x">
+
+  {# ── Quick summary strip ───────────────────────────────────── #}
+  <div class="cell">
+    <div class="card" style="margin-bottom:0.85rem">
+      <div class="card-section" style="padding:0.7rem 1rem">
+        <div style="display:flex;gap:1rem;align-items:center;flex-wrap:wrap">
+          <span class="label {% if status.binary_ok %}success{% else %}alert{% endif %}" style="font-size:0.82rem;padding:0.35em 0.7em">
+            <i class="fa-solid {% if status.binary_ok %}fa-circle-check{% else %}fa-circle-xmark{% endif %}"></i>
+            Binary
+          </span>
+          <span class="label {% if status.daemon_ok %}success{% else %}alert{% endif %}" style="font-size:0.82rem;padding:0.35em 0.7em">
+            <i class="fa-solid {% if status.daemon_ok %}fa-circle-check{% else %}fa-circle-xmark{% endif %}"></i>
+            Daemon
+          </span>
+          <span class="label {% if status.can_apply_routes %}success{% else %}alert{% endif %}" style="font-size:0.82rem;padding:0.35em 0.7em">
+            <i class="fa-solid {% if status.can_apply_routes %}fa-circle-check{% else %}fa-circle-xmark{% endif %}"></i>
+            Can apply routes
+          </span>
+          <span class="subtle" style="font-size:0.8rem;margin-left:auto">
+            <i class="fa-regular fa-clock"></i> {{ status.checked_at }}
+          </span>
+          <a href="/gobgp-status" class="button tiny secondary" style="margin:0">
+            <i class="fa-solid fa-rotate"></i> Refresh
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {# ── Detail card ───────────────────────────────────────────── #}
+  <div class="cell large-8">
+    <div class="card">
+      <div class="card-divider">
+        <i class="fa-solid fa-circle-dot"></i> GoBGP Connectivity
+      </div>
+      <div class="card-section" style="padding:0">
+        <table class="stack" style="margin:0;border:none;box-shadow:none;border-radius:0">
+          <tbody>
+            <tr>
+              <td style="width:38%;font-weight:600;padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9">Mode</td>
+              <td style="padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9">
+                <span class="badge {% if status.enabled %}success{% else %}warning{% endif %}">{{ status.mode }}</span>
+              </td>
+            </tr>
+            <tr>
+              <td style="font-weight:600;padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9">Binary</td>
+              <td style="padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9"><code>{{ status.binary }}</code></td>
+            </tr>
+            <tr>
+              <td style="font-weight:600;padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9">Endpoint</td>
+              <td style="padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9"><code>{{ status.endpoint }}</code></td>
+            </tr>
+            <tr>
+              <td style="font-weight:600;padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9">Timeout</td>
+              <td style="padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9">{{ status.timeout }}s</td>
+            </tr>
+            <tr>
+              <td style="font-weight:600;padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9">Binary check</td>
+              <td style="padding:0.65rem 1rem;border-bottom:1px solid #f1f5f9">
+                <span class="label {% if status.binary_ok %}success{% else %}alert{% endif %}">
+                  {% if status.binary_ok %}ok{% else %}error{% endif %}
+                </span>
+                <div class="subtle" style="font-size:0.82rem;margin-top:0.3rem">{{ status.binary_message }}</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="font-weight:600;padding:0.65rem 1rem">Daemon check</td>
+              <td style="padding:0.65rem 1rem">
+                <span class="label {% if status.daemon_ok %}success{% else %}alert{% endif %}">
+                  {% if status.daemon_ok %}ok{% else %}error{% endif %}
+                </span>
+                <div class="subtle" style="font-size:0.82rem;margin-top:0.3rem">{{ status.daemon_message }}</div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  {# ── Troubleshooting ───────────────────────────────────────── #}
+  <div class="cell large-4">
+    <div class="callout secondary">
+      <h6><i class="fa-solid fa-wrench"></i> Troubleshooting</h6>
+      <ul style="font-size:0.84rem;margin-bottom:0;padding-left:1.2rem">
+        <li>Ensure <code>gobgpd</code> daemon is running</li>
+        <li>Check <code>GOBGP_BINARY</code> and <code>GOBGP_ENDPOINT</code> env vars</li>
+        <li>In gRPC mode, confirm port 50051 is reachable</li>
+        <li>View logs: <code>docker compose logs app</code></li>
+      </ul>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
