@@ -51,6 +51,50 @@
             <div class="stat-number">{{ next_hops_count }}</div>
             <div class="stat-label"><i class="fa-solid fa-right-left"></i> Next Hops</div>
           </div>
+          <div class="stat-block">
+            <div class="stat-number">{{ enabled_sites_count }}</div>
+            <div class="stat-label"><i class="fa-solid fa-bullhorn"></i> Enabled Sites</div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-number">{{ active_prefixes_count }}</div>
+            <div class="stat-label"><i class="fa-solid fa-route"></i> Active Prefixes</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cell large-12">
+    <div class="card">
+      <div class="card-divider">
+        <i class="fa-solid fa-arrows-rotate"></i> GoBGP Sync
+      </div>
+      <div class="card-section">
+        <p style="margin-bottom:0.6rem;color:#6b7280;font-size:0.88rem">
+          Use these actions after a VPS reboot, a goBGP restart, or when you want to rebuild the server state from the UI.
+        </p>
+        {% if maintenance_status %}
+        <div class="callout secondary" style="margin-bottom:0.85rem">
+          <strong>Last operation:</strong> {{ maintenance_status }}
+        </div>
+        {% endif %}
+        <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
+          <form method="post" action="/settings/apply-current"
+                onsubmit="return confirm('Purge current goBGP routes and apply the current enabled state from the UI?')">
+            <button class="button primary" type="submit">
+              <i class="fa-solid fa-upload"></i> Apply Current State
+            </button>
+          </form>
+          <form method="post" action="/settings/rediscover-all"
+                onsubmit="return confirm('Re-discover all sites, then purge current goBGP routes and re-apply the current enabled state?')">
+            <button class="button warning" type="submit">
+              <i class="fa-solid fa-wand-magic-sparkles"></i> Rediscover All + Apply
+            </button>
+          </form>
+        </div>
+        <div class="callout secondary" style="margin-top:0.85rem;margin-bottom:0;font-size:0.83rem">
+          <p style="margin:0 0 0.35rem"><strong>Apply Current State</strong> clears the current goBGP RIB and re-applies all active prefixes from enabled sites, including manual prefixes.</p>
+          <p style="margin:0"><strong>Rediscover All + Apply</strong> refreshes discovery prefixes for every site in the database, then rebuilds the goBGP state from the updated UI data.</p>
         </div>
       </div>
     </div>

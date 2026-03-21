@@ -285,7 +285,9 @@ Copy `.env.example` to `.env` and set values.
 | Variable | Default | Description |
 |---|---|---|
 | `IPINFO_TOKEN` | empty | Optional IPinfo token |
-| `DISCOVERY_MAX_IPS` | `3` | Limit resolved A-records used |
+| `DISCOVERY_MAX_IPS` | `12` | Limit resolved A-records used after DNS sampling |
+| `DISCOVERY_DNS_ATTEMPTS` | `4` | Number of DNS resolution passes per domain |
+| `DISCOVERY_DNS_DELAY_MS` | `250` | Delay between DNS resolution passes |
 | `DISCOVERY_IP_LOOKUP_TIMEOUT` | `2` | IP -> ASN timeout |
 | `DISCOVERY_PREFIX_LOOKUP_TIMEOUT` | `6` | ASN -> prefixes timeout |
 | `DISCOVERY_HTTP_RETRIES` | `2` | HTTP retries |
@@ -315,6 +317,8 @@ Copy `.env.example` to `.env` and set values.
 - `POST /next-hops/{next_hop_id}/delete`
 - `GET /settings`
 - `POST /settings/discovery-mode`
+- `POST /settings/apply-current`
+- `POST /settings/rediscover-all`
 
 ## Security Notes
 
@@ -336,6 +340,12 @@ Copy `.env.example` to `.env` and set values.
 - Try another discovery mode in Settings
 - Increase discovery timeouts in `.env`
 - Verify outbound internet access from container
+
+### Discovery misses large CDN domains
+
+- Increase `DISCOVERY_DNS_ATTEMPTS` and `DISCOVERY_MAX_IPS`
+- Re-run site rediscovery after DNS sampling changes
+- For domains like `youtube.com`, DNS-based discovery is still heuristic and may need manual prefix additions
 
 ### Database path errors
 

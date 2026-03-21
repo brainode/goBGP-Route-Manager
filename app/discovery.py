@@ -4,6 +4,7 @@ from ipaddress import ip_address, ip_network, collapse_addresses, summarize_addr
 import os
 import re
 import socket
+import time
 from typing import Optional
 
 import requests
@@ -44,7 +45,7 @@ def _redact_sensitive(value: str) -> str:
     return value
 
 
-def _int_env(name: str, default: int) -> int:
+def _int_env(name: str, default: int, min_value: int = 1) -> int:
     raw = os.getenv(name, "").strip()
     if not raw:
         return default
@@ -52,7 +53,7 @@ def _int_env(name: str, default: int) -> int:
         value = int(raw)
     except ValueError:
         return default
-    return value if value > 0 else default
+    return value if value >= min_value else default
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -62,13 +63,26 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
-def _resolve_ips(domain: str) -> list[str]:
-    try:
-        infos = socket.getaddrinfo(domain, None)
-        ips = sorted({entry[4][0] for entry in infos})
-        return [ip for ip in ips if ":" not in ip]
-    except Exception:
-        return []
+def _resolve_ips(domain: str, debug: Optional[list[str]] = None) -> list[str]:
+    attempts = _int_env("DISCOVERY_DNS_ATTEMPTS", 4)
+    delay_ms = _int_env("DISCOVERY_DNS_DELAY_MS", 250, min_value=0)
+    seen: dict[str, None] = {}
+
+    for attempt in range(1, attempts + 1):
+        try:
+            infos = socket.getaddrinfo(domain, None)
+            attempt_ips = sorted({entry[4][0] for entry in infos if ":" not in entry[4][0]})
+            _dbg(debug, f"dns attempt={attempt}/{attempts} ipv4_count={len(attempt_ips)} sample={attempt_ips[:4]}")
+            for ip in attempt_ips:
+                seen.setdefault(ip, None)
+        except Exception as exc:
+            _dbg(debug, f"dns attempt={attempt}/{attempts} error={exc}")
+        if attempt < attempts and delay_ms:
+            time.sleep(delay_ms / 1000)
+
+    ips = list(seen.keys())
+    _dbg(debug, f"dns merged_ipv4_count={len(ips)}")
+    return ips
 
 
 def _extract_asn(value: object) -> Optional[str]:
@@ -372,12 +386,11 @@ def discover_domain(
 ) -> tuple[Optional[str], list[str], list[str]]:
     domain = _normalize_domain(domain)
     _dbg(debug, f"discover domain={domain} mode={mode}")
-    resolved_ips = _resolve_ips(domain)
-    _dbg(debug, f"dns ipv4_count={len(resolved_ips)} sample={resolved_ips[:4]}")
+    resolved_ips = _resolve_ips(domain, debug=debug)
     if not resolved_ips:
         return None, [], []
 
-    max_ips = _int_env("DISCOVERY_MAX_IPS", 10)
+    max_ips = _int_env("DISCOVERY_MAX_IPS", 12)
     ips = resolved_ips[:max_ips]
     if len(resolved_ips) > len(ips):
         _dbg(debug, f"dns truncated_ips={len(ips)} of {len(resolved_ips)}")
