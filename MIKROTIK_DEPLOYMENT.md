@@ -72,8 +72,11 @@ sudo systemctl disable --now gobgp
 You do not need to run the full prod profile on the VPS if Route Manager will live on the MikroTik. Start only the goBGP service:
 
 ```bash
+export GOBGPD_API_HOSTS=<vps_wg_ip>
 docker compose --profile prod up --build -d gobgp-prod
 ```
+
+`GOBGPD_API_HOSTS` should be the VPS WireGuard IP. If you do not set it, `gobgp-prod` binds gRPC only to `127.0.0.1`, which is safer by default but will prevent the MikroTik from reaching `50051/tcp`.
 
 ### 4. Verify Listener State
 
@@ -155,7 +158,7 @@ and also lets the container reach the VPS WireGuard IP through normal router for
 Route Manager stores SQLite under `/data`, so create a mount for that path:
 
 ```routeros
-/container/mounts/add name=route-manager-data src=disk1/route-manager-data dst=/data
+/container/mounts/add list=route-manager-data src=disk1/route-manager-data dst=/data
 ```
 
 ## Part 4. Configure Route Manager Environment on MikroTik
@@ -163,16 +166,16 @@ Route Manager stores SQLite under `/data`, so create a mount for that path:
 Create an env list for the container:
 
 ```routeros
-/container/envs/add name=route-manager-envs key=APP_NAME value="goBGP Route Manager"
-/container/envs/add name=route-manager-envs key=APP_HOST value="0.0.0.0"
-/container/envs/add name=route-manager-envs key=APP_PORT value="8000"
-/container/envs/add name=route-manager-envs key=DATABASE_URL value="sqlite:////data/route_manager.db"
-/container/envs/add name=route-manager-envs key=GOBGP_ENABLED value="true"
-/container/envs/add name=route-manager-envs key=GOBGP_HOST value="10.100.0.1"
-/container/envs/add name=route-manager-envs key=GOBGP_PORT value="50051"
-/container/envs/add name=route-manager-envs key=GOBGP_USE_GRPC value="true"
-/container/envs/add name=route-manager-envs key=GOBGP_GRPC_FALLBACK_CLI value="true"
-/container/envs/add name=route-manager-envs key=DISCOVERY_ENABLE_BGPVIEW value="false"
+/container/envs/add list=route-manager-envs key=APP_NAME value="goBGP Route Manager"
+/container/envs/add list=route-manager-envs key=APP_HOST value="0.0.0.0"
+/container/envs/add list=route-manager-envs key=APP_PORT value="8000"
+/container/envs/add list=route-manager-envs key=DATABASE_URL value="sqlite:////data/route_manager.db"
+/container/envs/add list=route-manager-envs key=GOBGP_ENABLED value="true"
+/container/envs/add list=route-manager-envs key=GOBGP_HOST value="10.100.0.1"
+/container/envs/add list=route-manager-envs key=GOBGP_PORT value="50051"
+/container/envs/add list=route-manager-envs key=GOBGP_USE_GRPC value="true"
+/container/envs/add list=route-manager-envs key=GOBGP_GRPC_FALLBACK_CLI value="true"
+/container/envs/add list=route-manager-envs key=DISCOVERY_ENABLE_BGPVIEW value="false"
 ```
 
 Replace `10.100.0.1` with the VPS WireGuard IP that exposes goBGP gRPC.
@@ -197,13 +200,13 @@ Upload `route-manager-arm64.tar` to the router `disk1/` using one of:
 ### 2. Create the Container from File
 
 ```routeros
-/container/add file=disk1/route-manager-arm64.tar interface=veth-route-manager root-dir=disk1/route-manager-root mounts=route-manager-data envlist=route-manager-envs start-on-boot=yes
+/container/add file=disk1/route-manager-arm64.tar interface=veth-route-manager root-dir=disk1/route-manager-root mountlists=route-manager-data envlist=route-manager-envs name=route-manager start-on-boot=yes logging=yes
 ```
 
 Then start it:
 
 ```routeros
-/container/start [find where root-dir="disk1/route-manager-root"]
+/container/start [find where name=route-manager]
 ```
 
 ## Part 6. Validation
@@ -282,7 +285,7 @@ Example policy intent:
 
 The MikroTik steps above are based on official RouterOS container primitives:
 
-- `/container/add file=... interface=... root-dir=...`
+- `/container/add file=... interface=... root-dir=... mountlists=... envlist=...`
 - `/container/mounts/add ...`
 - `/container/envs/add ...`
 - `/interface/veth/add ...`

@@ -39,6 +39,7 @@ sudo systemctl disable --now gobgpd || sudo systemctl disable --now gobgp
 
 ```bash
 git pull
+export GOBGPD_API_HOSTS=<VPS_WG_IP>
 docker compose --profile prod up --build -d gobgp-prod
 ss -ltnp | grep -E ':179|:50051'
 docker logs gobgp-prod --tail 100
@@ -47,7 +48,7 @@ docker logs gobgp-prod --tail 100
 Expected:
 
 - `179/tcp` is listening for BGP peers
-- `50051/tcp` is listening for goBGP gRPC
+- `50051/tcp` is listening for goBGP gRPC on `<VPS_WG_IP>` only
 
 ## 4. Build Route Manager for MikroTik ARM64 on Windows
 
@@ -87,28 +88,28 @@ Example:
 ```routeros
 /interface/veth/add name=veth-route-manager address=192.168.88.250/24 gateway=192.168.88.1
 /interface/bridge/port/add bridge=bridge interface=veth-route-manager
-/container/mounts/add name=route-manager-data src=disk1/route-manager-data dst=/data
+/container/mounts/add list=route-manager-data src=disk1/route-manager-data dst=/data
 ```
 
 ## 7. Create Route Manager Environment on MikroTik
 
 ```routeros
-/container/envs/add name=route-manager-envs key=APP_NAME value="goBGP Route Manager"
-/container/envs/add name=route-manager-envs key=APP_HOST value="0.0.0.0"
-/container/envs/add name=route-manager-envs key=APP_PORT value="8000"
-/container/envs/add name=route-manager-envs key=DATABASE_URL value="sqlite:////data/route_manager.db"
-/container/envs/add name=route-manager-envs key=GOBGP_ENABLED value="true"
-/container/envs/add name=route-manager-envs key=GOBGP_HOST value="<VPS_WG_IP>"
-/container/envs/add name=route-manager-envs key=GOBGP_PORT value="50051"
-/container/envs/add name=route-manager-envs key=GOBGP_USE_GRPC value="true"
-/container/envs/add name=route-manager-envs key=GOBGP_GRPC_FALLBACK_CLI value="true"
-/container/envs/add name=route-manager-envs key=DISCOVERY_ENABLE_BGPVIEW value="false"
+/container/envs/add list=route-manager-envs key=APP_NAME value="goBGP Route Manager"
+/container/envs/add list=route-manager-envs key=APP_HOST value="0.0.0.0"
+/container/envs/add list=route-manager-envs key=APP_PORT value="8000"
+/container/envs/add list=route-manager-envs key=DATABASE_URL value="sqlite:////data/route_manager.db"
+/container/envs/add list=route-manager-envs key=GOBGP_ENABLED value="true"
+/container/envs/add list=route-manager-envs key=GOBGP_HOST value="<VPS_WG_IP>"
+/container/envs/add list=route-manager-envs key=GOBGP_PORT value="50051"
+/container/envs/add list=route-manager-envs key=GOBGP_USE_GRPC value="true"
+/container/envs/add list=route-manager-envs key=GOBGP_GRPC_FALLBACK_CLI value="true"
+/container/envs/add list=route-manager-envs key=DISCOVERY_ENABLE_BGPVIEW value="false"
 ```
 
 ## 8. Create and Start the MikroTik Container
 
 ```routeros
-/container/add file=disk1/route-manager-arm64.tar interface=veth-route-manager root-dir=disk1/route-manager-root mounts=route-manager-data envlist=route-manager-envs name=route-manager start-on-boot=yes logging=yes
+/container/add file=disk1/route-manager-arm64.tar interface=veth-route-manager root-dir=disk1/route-manager-root mountlists=route-manager-data envlist=route-manager-envs name=route-manager start-on-boot=yes logging=yes
 /container/print
 /container/start [find where name=route-manager]
 ```

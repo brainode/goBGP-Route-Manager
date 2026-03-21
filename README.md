@@ -113,6 +113,8 @@ Open: `http://localhost:8000`
 | `dev` | `gobgp-dev`, `route-manager-dev` | bridge | `localhost:8000` | `gobgp` |
 | `prod` | `gobgp-prod`, `route-manager-prod` | host | host:8000 | `127.0.0.1` |
 
+For security, `gobgp-prod` binds gRPC to `127.0.0.1:50051` by default. To expose it intentionally on a WireGuard IP instead, set `GOBGPD_API_HOSTS=<vps_wg_ip>` before starting the prod profile.
+
 Switch profile:
 
 ```bash
@@ -146,6 +148,7 @@ Edit `.env`:
 - `GOBGP_ENABLED=true`
 - `GOBGP_HOST=127.0.0.1` (or the real goBGP host)
 - `GOBGP_PORT=50051`
+- `GOBGPD_API_HOSTS=127.0.0.1`
 
 Run Route Manager container only:
 
@@ -204,21 +207,25 @@ Recommended split:
 On VPS:
 
 ```bash
+export GOBGPD_API_HOSTS=<wireguard_ip_of_vps>
 docker build -t gobgp-daemon:latest -f Dockerfile.gobgp .
 docker run -d --name gobgp \
   --restart unless-stopped \
   --network host \
   -v "$(pwd)/gobgp/gobgpd.toml:/etc/gobgp/gobgpd.toml:ro" \
-  gobgp-daemon:latest
+  gobgp-daemon:latest \
+  -f /etc/gobgp/gobgpd.toml --api-hosts ${GOBGPD_API_HOSTS}:50051
 ```
 
 ```powershell
+$env:GOBGPD_API_HOSTS="<wireguard_ip_of_vps>"
 docker build -t gobgp-daemon:latest -f Dockerfile.gobgp .
 docker run -d --name gobgp `
   --restart unless-stopped `
   --network host `
   -v ${PWD}\\gobgp\\gobgpd.toml:/etc/gobgp/gobgpd.toml:ro `
-  gobgp-daemon:latest
+  gobgp-daemon:latest `
+  -f /etc/gobgp/gobgpd.toml --api-hosts ${env:GOBGPD_API_HOSTS}:50051
 ```
 
 On internal host (where UI/API lives), edit `.env`:
