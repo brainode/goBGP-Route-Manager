@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: GPL-2.0-only
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from ipaddress import ip_address, ip_network
 import logging
 import os
 import re
+from threading import Lock
 from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
@@ -21,6 +23,8 @@ from .gobgp_client import GoBGPClient
 from .models import NextHop, Prefix, Setting, Site
 
 _DISCOVERY_MODE_KEY = "discovery_mode"
+_MAINTENANCE_STATUS_KEY = "maintenance_status"
+_maintenance_lock = Lock()
 
 
 def _get_discovery_mode(db: Session) -> str:
@@ -28,6 +32,32 @@ def _get_discovery_mode(db: Session) -> str:
     if row and row.value in {k for k, _ in DISCOVERY_MODES}:
         return row.value
     return DISCOVERY_MODE_DEFAULT
+
+
+def _get_setting_value(db: Session, key: str) -> Optional[str]:
+    row = db.query(Setting).filter(Setting.key == key).first()
+    return row.value if row else None
+
+
+def _set_setting_value(db: Session, key: str, value: str) -> None:
+    row = db.query(Setting).filter(Setting.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(Setting(key=key, value=value))
+
+
+def _set_maintenance_status(message: str) -> None:
+    db = SessionLocal()
+    try:
+        _set_setting_value(db, _MAINTENANCE_STATUS_KEY, message)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _timestamp_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
 
 app = FastAPI(title=os.getenv("APP_NAME", "goBGP Route Manager"))
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -79,22 +109,29 @@ def _apply_prefix(db: Session, site: Site, prefix: Prefix, announce: bool) -> bo
     return ok
 
 
-def _sync_site(db: Session, site: Site) -> None:
+def _sync_site(db: Session, site: Site) -> dict[str, int | str | bool]:
     site = db.query(Site).options(joinedload(Site.next_hop), joinedload(Site.prefixes)).filter(Site.id == site.id).first()
     if not site:
-        return
+        return {"ok": False, "site_id": 0, "attempted": 0, "succeeded": 0, "failed": 0}
     consecutive_failures = 0
+    attempted = 0
+    succeeded = 0
+    failed = 0
     for prefix in site.prefixes:
         if not prefix.is_active:
             continue
+        attempted += 1
         ok = _apply_prefix(db, site, prefix, announce=site.enabled)
         if ok:
             consecutive_failures = 0
+            succeeded += 1
             continue
         consecutive_failures += 1
+        failed += 1
         if consecutive_failures >= 3:
             logger.error("sync aborted site_id=%s domain=%s after %s consecutive failures", site.id, site.domain, consecutive_failures)
             break
+    return {"ok": failed == 0, "site_id": site.id, "attempted": attempted, "succeeded": succeeded, "failed": failed}
 
 
 def _sync_site_by_id(site_id: int) -> None:
@@ -104,12 +141,216 @@ def _sync_site_by_id(site_id: int) -> None:
         if not site:
             return
         logger.info("sync start site_id=%s domain=%s enabled=%s prefixes=%s", site.id, site.domain, site.enabled, len(site.prefixes))
-        _sync_site(db, site)
-        logger.info("sync done site_id=%s domain=%s", site.id, site.domain)
+        result = _sync_site(db, site)
+        logger.info(
+            "sync done site_id=%s domain=%s attempted=%s succeeded=%s failed=%s",
+            site.id,
+            site.domain,
+            result["attempted"],
+            result["succeeded"],
+            result["failed"],
+        )
     except Exception:
         logger.exception("sync failed site_id=%s", site_id)
     finally:
         db.close()
+
+
+def _rediscover_site_state(db: Session, site: Site, apply_changes: bool = True) -> dict[str, int | str | bool | None]:
+    site = db.query(Site).options(joinedload(Site.next_hop), joinedload(Site.prefixes)).filter(Site.id == site.id).first()
+    if not site:
+        return {"ok": False, "site_id": 0, "added": 0, "removed": 0, "discovered": 0, "asn": None}
+
+    discovery_mode = _get_discovery_mode(db)
+    debug_lines: list[str] = []
+    try:
+        asn, _ips, prefixes = discover_domain(site.domain, debug=debug_lines, mode=discovery_mode)
+    except Exception as exc:
+        logger.exception("rediscover failed site_id=%s domain=%s error=%s", site.id, site.domain, exc)
+        return {"ok": False, "site_id": site.id, "added": 0, "removed": 0, "discovered": 0, "asn": None}
+
+    for line in debug_lines[:40]:
+        logger.info("rediscover debug site_id=%s domain=%s %s", site.id, site.domain, _sanitize_log_message(line))
+    if len(debug_lines) > 40:
+        logger.info(
+            "rediscover debug site_id=%s domain=%s truncated_lines=%s",
+            site.id,
+            site.domain,
+            len(debug_lines) - 40,
+        )
+
+    if not asn and not prefixes:
+        logger.warning("rediscover empty result site_id=%s domain=%s", site.id, site.domain)
+        return {"ok": False, "site_id": site.id, "added": 0, "removed": 0, "discovered": 0, "asn": None}
+
+    existing_discovery = [p for p in site.prefixes if p.source == "discovery"]
+    current = {p.cidr for p in site.prefixes}
+    target = set(prefixes)
+
+    to_remove = [p for p in existing_discovery if p.cidr not in target]
+    to_add = sorted(target - current)
+
+    if apply_changes and site.enabled:
+        for prefix in to_remove:
+            if prefix.is_active:
+                _apply_prefix(db, site, prefix, announce=False)
+
+    for prefix in to_remove:
+        db.delete(prefix)
+    db.commit()
+
+    site.asn = asn
+    db.commit()
+
+    added = 0
+    for cidr in to_add:
+        prefix = Prefix(site_id=site.id, cidr=cidr, source="discovery")
+        db.add(prefix)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            continue
+        db.refresh(prefix)
+        added += 1
+        if apply_changes and site.enabled:
+            _apply_prefix(db, site, prefix, announce=True)
+
+    logger.info(
+        "rediscover done site_id=%s domain=%s asn=%s prefixes_total=%s added=%s removed=%s apply_changes=%s",
+        site.id,
+        site.domain,
+        asn,
+        len(target),
+        added,
+        len(to_remove),
+        apply_changes,
+    )
+    return {
+        "ok": True,
+        "site_id": site.id,
+        "added": added,
+        "removed": len(to_remove),
+        "discovered": len(target),
+        "asn": asn,
+    }
+
+
+def _apply_current_state(db: Session) -> dict[str, int | bool | list[str]]:
+    purge_result = gobgp.purge_routes()
+    enabled_sites = (
+        db.query(Site)
+        .options(joinedload(Site.next_hop), joinedload(Site.prefixes))
+        .filter(Site.enabled == True)  # noqa: E712
+        .order_by(Site.domain.asc())
+        .all()
+    )
+
+    attempted = 0
+    succeeded = 0
+    failed = 0
+    for site in enabled_sites:
+        result = _sync_site(db, site)
+        attempted += int(result["attempted"])
+        succeeded += int(result["succeeded"])
+        failed += int(result["failed"])
+
+    errors = list(purge_result.get("errors", []))
+    if failed > 0:
+        errors.append(f"apply_failed prefixes={failed}")
+
+    return {
+        "ok": bool(purge_result.get("ok", False)) and failed == 0,
+        "routes_found": int(purge_result.get("routes_found", 0)),
+        "routes_removed": int(purge_result.get("routes_removed", 0)),
+        "sites": len(enabled_sites),
+        "prefixes_attempted": attempted,
+        "prefixes_applied": succeeded,
+        "prefixes_failed": failed,
+        "errors": errors,
+    }
+
+
+def _run_apply_current_state_job(trigger: str) -> None:
+    if not _maintenance_lock.acquire(blocking=False):
+        logger.warning("maintenance skipped trigger=%s reason=busy", trigger)
+        _set_maintenance_status(f"{_timestamp_now()} Busy: another maintenance task is already running")
+        return
+
+    _set_maintenance_status(f"{_timestamp_now()} Running: apply current state")
+    db = SessionLocal()
+    try:
+        result = _apply_current_state(db)
+        logger.info("maintenance apply_current trigger=%s result=%s", trigger, result)
+        if result["ok"]:
+            _set_maintenance_status(
+                f"{_timestamp_now()} Apply complete: removed {result['routes_removed']}/{result['routes_found']} existing routes, "
+                f"applied {result['prefixes_applied']} prefixes across {result['sites']} enabled sites"
+            )
+        else:
+            errors = ", ".join(result["errors"][:3]) if result["errors"] else "unknown error"
+            _set_maintenance_status(
+                f"{_timestamp_now()} Apply finished with errors: removed {result['routes_removed']}/{result['routes_found']} existing routes, "
+                f"applied {result['prefixes_applied']} prefixes, failed {result['prefixes_failed']} ({errors})"
+            )
+    except Exception:
+        logger.exception("maintenance apply_current failed trigger=%s", trigger)
+        _set_maintenance_status(f"{_timestamp_now()} Apply failed: see container logs for details")
+    finally:
+        db.close()
+        _maintenance_lock.release()
+
+
+def _run_rediscover_all_and_apply_job(trigger: str) -> None:
+    if not _maintenance_lock.acquire(blocking=False):
+        logger.warning("maintenance skipped trigger=%s reason=busy", trigger)
+        _set_maintenance_status(f"{_timestamp_now()} Busy: another maintenance task is already running")
+        return
+
+    _set_maintenance_status(f"{_timestamp_now()} Running: rediscover all sites and apply current state")
+    db = SessionLocal()
+    try:
+        sites = db.query(Site).options(joinedload(Site.next_hop), joinedload(Site.prefixes)).order_by(Site.domain.asc()).all()
+        rediscover_ok = 0
+        rediscover_failed = 0
+        added = 0
+        removed = 0
+        for site in sites:
+            result = _rediscover_site_state(db, site, apply_changes=False)
+            if result["ok"]:
+                rediscover_ok += 1
+                added += int(result["added"])
+                removed += int(result["removed"])
+            else:
+                rediscover_failed += 1
+
+        apply_result = _apply_current_state(db)
+        logger.info(
+            "maintenance rediscover_all trigger=%s rediscover_ok=%s rediscover_failed=%s added=%s removed=%s apply=%s",
+            trigger,
+            rediscover_ok,
+            rediscover_failed,
+            added,
+            removed,
+            apply_result,
+        )
+        if apply_result["ok"] and rediscover_failed == 0:
+            _set_maintenance_status(
+                f"{_timestamp_now()} Rediscover complete: updated {rediscover_ok} sites, added {added}, removed {removed}, "
+                f"then applied {apply_result['prefixes_applied']} prefixes"
+            )
+        else:
+            errors = ", ".join(apply_result["errors"][:3]) if apply_result["errors"] else "rediscover/apply partial failure"
+            _set_maintenance_status(
+                f"{_timestamp_now()} Rediscover finished with issues: updated {rediscover_ok} sites, failed {rediscover_failed}, "
+                f"added {added}, removed {removed}, applied {apply_result['prefixes_applied']} prefixes ({errors})"
+            )
+    except Exception:
+        logger.exception("maintenance rediscover_all failed trigger=%s", trigger)
+        _set_maintenance_status(f"{_timestamp_now()} Rediscover all failed: see container logs for details")
+    finally:
+        db.close()
+        _maintenance_lock.release()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -213,71 +454,7 @@ def rediscover_site(site_id: int, db: Session = Depends(get_db)):
     site = db.query(Site).options(joinedload(Site.next_hop), joinedload(Site.prefixes)).filter(Site.id == site_id).first()
     if not site:
         raise HTTPException(status_code=404, detail="site not found")
-
-    discovery_mode = _get_discovery_mode(db)
-    debug_lines: list[str] = []
-    try:
-        asn, _ips, prefixes = discover_domain(site.domain, debug=debug_lines, mode=discovery_mode)
-    except Exception as exc:
-        logger.exception("rediscover failed site_id=%s domain=%s error=%s", site.id, site.domain, exc)
-        return RedirectResponse(url="/sites", status_code=303)
-
-    for line in debug_lines[:40]:
-        logger.info("rediscover debug site_id=%s domain=%s %s", site.id, site.domain, _sanitize_log_message(line))
-    if len(debug_lines) > 40:
-        logger.info(
-            "rediscover debug site_id=%s domain=%s truncated_lines=%s",
-            site.id,
-            site.domain,
-            len(debug_lines) - 40,
-        )
-
-    if not asn and not prefixes:
-        logger.warning("rediscover empty result site_id=%s domain=%s", site.id, site.domain)
-        return RedirectResponse(url="/sites", status_code=303)
-
-    existing_discovery = [p for p in site.prefixes if p.source == "discovery"]
-    current = {p.cidr for p in site.prefixes}  # all sources — prevents re-adding manual CIDRs
-    target = set(prefixes)
-
-    to_remove = [p for p in existing_discovery if p.cidr not in target]
-    to_add = sorted(target - current)
-
-    if site.enabled:
-        for prefix in to_remove:
-            if prefix.is_active:
-                _apply_prefix(db, site, prefix, announce=False)
-
-    for prefix in to_remove:
-        db.delete(prefix)
-    db.commit()
-
-    site.asn = asn
-    db.commit()
-
-    added = 0
-    for cidr in to_add:
-        prefix = Prefix(site_id=site.id, cidr=cidr, source="discovery")
-        db.add(prefix)
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            continue
-        db.refresh(prefix)
-        added += 1
-        if site.enabled:
-            _apply_prefix(db, site, prefix, announce=True)
-
-    logger.info(
-        "rediscover done site_id=%s domain=%s asn=%s prefixes_total=%s added=%s removed=%s",
-        site.id,
-        site.domain,
-        asn,
-        len(target),
-        added,
-        len(to_remove),
-    )
+    _rediscover_site_state(db, site, apply_changes=True)
     return RedirectResponse(url="/sites", status_code=303)
 
 
@@ -387,6 +564,14 @@ def settings_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
     sites_count = db.query(func.count(Site.id)).scalar() or 0
     prefixes_count = db.query(func.count(Prefix.id)).scalar() or 0
     next_hops_count = db.query(func.count(NextHop.id)).scalar() or 0
+    enabled_sites_count = db.query(func.count(Site.id)).filter(Site.enabled == True).scalar() or 0  # noqa: E712
+    active_prefixes_count = (
+        db.query(func.count(Prefix.id))
+        .join(Site, Prefix.site_id == Site.id)
+        .filter(Prefix.is_active == True, Site.enabled == True)  # noqa: E712
+        .scalar()
+        or 0
+    )
     return templates.TemplateResponse(
         "settings.html",
         {
@@ -397,6 +582,9 @@ def settings_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
             "sites_count": sites_count,
             "prefixes_count": prefixes_count,
             "next_hops_count": next_hops_count,
+            "enabled_sites_count": enabled_sites_count,
+            "active_prefixes_count": active_prefixes_count,
+            "maintenance_status": _get_setting_value(db, _MAINTENANCE_STATUS_KEY),
         },
     )
 
@@ -421,6 +609,18 @@ def purge_inactive(db: Session = Depends(get_db)):
     for p in inactive:
         db.delete(p)
     db.commit()
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+@app.post("/settings/apply-current")
+def apply_current_state(background_tasks: BackgroundTasks):
+    background_tasks.add_task(_run_apply_current_state_job, "settings")
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+@app.post("/settings/rediscover-all")
+def rediscover_all_sites(background_tasks: BackgroundTasks):
+    background_tasks.add_task(_run_rediscover_all_and_apply_job, "settings")
     return RedirectResponse(url="/settings", status_code=303)
 
 
