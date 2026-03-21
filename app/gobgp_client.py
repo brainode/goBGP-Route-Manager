@@ -52,6 +52,13 @@ class GoBGPClient:
             return default
         return raw in {"1", "true", "yes", "on"}
 
+    @staticmethod
+    def _format_exc(exc: Exception) -> str:
+        text = str(exc).strip()
+        if text:
+            return text
+        return repr(exc)
+
     def _base_cmd(self) -> list[str]:
         cmd = [self.binary]
         if self.host:
@@ -80,7 +87,7 @@ class GoBGPClient:
             try:
                 grpc.channel_ready_future(channel).result(timeout=max(self.grpc_timeout, 1.0))
             except Exception as exc:
-                return None, f"grpc connect failed target={target} error={exc}"
+                return None, f"grpc connect failed target={target} error={self._format_exc(exc)}"
 
             self._grpc_channel = channel
             self._grpc_stub = gobgp_pb2_grpc.GoBgpServiceStub(channel)
@@ -154,7 +161,7 @@ class GoBGPClient:
                 )
             return True, "ok"
         except Exception as exc:
-            return False, str(exc)
+            return False, self._format_exc(exc)
 
     @staticmethod
     def _ip_family_arg(cidr: str) -> str:
@@ -260,7 +267,7 @@ class GoBGPClient:
                 return True, output.strip() or "ok"
             return False, output.strip() or f"command failed with code {proc.returncode}"
         except Exception as exc:
-            return False, str(exc)
+            return False, self._format_exc(exc)
 
     def _run_check(self, cmd: list[str], timeout: int) -> tuple[bool, str]:
         try:
@@ -402,7 +409,7 @@ class GoBGPClient:
                     daemon_message = "ok"
                 except Exception as exc:
                     daemon_ok = False
-                    daemon_message = str(exc)
+                    daemon_message = self._format_exc(exc)
         elif binary_ok:
             daemon_ok, daemon_message = self._run_check(self._base_cmd() + ["neighbor"], timeout=check_timeout)
 

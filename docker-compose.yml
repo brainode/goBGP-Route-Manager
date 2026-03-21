@@ -4,7 +4,6 @@ x-gobgp-common: &gobgp-common
     context: .
     dockerfile: Dockerfile.gobgp
   entrypoint: ["/usr/local/bin/gobgpd"]
-  command: ["-f", "/etc/gobgp/gobgpd.toml"]
   restart: unless-stopped
 
 x-route-manager-common: &route-manager-common
@@ -24,6 +23,7 @@ services:
     <<: *gobgp-common
     container_name: gobgp-dev
     profiles: ["dev"]
+    command: ["-f", "/etc/gobgp/gobgpd.toml", "--api-hosts", "0.0.0.0:50051"]
     ports:
       - "50051:50051"
       - "179:179/tcp"
@@ -45,6 +45,7 @@ services:
     <<: *gobgp-common
     container_name: gobgp-prod
     profiles: ["prod"]
+    command: ["-f", "/etc/gobgp/gobgpd.toml", "--api-hosts", "${GOBGPD_API_HOSTS:-127.0.0.1}:50051"]
     network_mode: host
 
   route-manager-prod:
