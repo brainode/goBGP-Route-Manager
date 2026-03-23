@@ -53,14 +53,14 @@ Expected:
 ## 4. Build Route Manager for MikroTik ARM64 on Windows
 
 ```powershell
-docker buildx build --platform linux/arm64 -t gobgp-route-manager:arm64 -f Dockerfile --load .
-docker save -o route-manager-arm64.tar gobgp-route-manager:arm64
+docker buildx build --platform linux/arm64 -t gobgp-route-manager:arm64 -f Dockerfile --output type=docker,dest=route-manager-arm64.tar,compression=uncompressed,force-compression=true,oci-mediatypes=false .
+python .\convert_routeros_image.py .\route-manager-arm64.tar .\route-manager-arm64-routeros.tar
 ```
 
 Optional checksum:
 
 ```powershell
-Get-FileHash .\route-manager-arm64.tar -Algorithm SHA256
+Get-FileHash .\route-manager-arm64-routeros.tar -Algorithm SHA256
 ```
 
 ## 5. Upload the Archive to MikroTik
@@ -68,7 +68,7 @@ Get-FileHash .\route-manager-arm64.tar -Algorithm SHA256
 Using SCP from PowerShell:
 
 ```powershell
-scp .\route-manager-arm64.tar <MT_SSH>:/disk1/route-manager-arm64.tar
+scp .\route-manager-arm64-routeros.tar <MT_SSH>:/disk1/route-manager-arm64-routeros.tar
 ```
 
 You can also upload it through WinBox Files.
@@ -99,17 +99,29 @@ Example:
 /container/envs/add list=route-manager-envs key=APP_PORT value="8000"
 /container/envs/add list=route-manager-envs key=DATABASE_URL value="sqlite:////data/route_manager.db"
 /container/envs/add list=route-manager-envs key=GOBGP_ENABLED value="true"
+/container/envs/add list=route-manager-envs key=GOBGP_BIN value="gobgp"
+/container/envs/add list=route-manager-envs key=GOBGP_TIMEOUT value="10"
 /container/envs/add list=route-manager-envs key=GOBGP_HOST value="<VPS_WG_IP>"
 /container/envs/add list=route-manager-envs key=GOBGP_PORT value="50051"
 /container/envs/add list=route-manager-envs key=GOBGP_USE_GRPC value="true"
+/container/envs/add list=route-manager-envs key=GOBGP_GRPC_TIMEOUT value="10"
 /container/envs/add list=route-manager-envs key=GOBGP_GRPC_FALLBACK_CLI value="true"
+/container/envs/add list=route-manager-envs key=ROUTE_APPLY_WORKERS value="8"
+/container/envs/add list=route-manager-envs key=IPINFO_TOKEN value=""
+/container/envs/add list=route-manager-envs key=DISCOVERY_MAX_IPS value="12"
+/container/envs/add list=route-manager-envs key=DISCOVERY_DNS_ATTEMPTS value="4"
+/container/envs/add list=route-manager-envs key=DISCOVERY_DNS_DELAY_MS value="250"
+/container/envs/add list=route-manager-envs key=DISCOVERY_IP_LOOKUP_TIMEOUT value="2"
+/container/envs/add list=route-manager-envs key=DISCOVERY_PREFIX_LOOKUP_TIMEOUT value="6"
+/container/envs/add list=route-manager-envs key=DISCOVERY_HTTP_RETRIES value="2"
+/container/envs/add list=route-manager-envs key=DISCOVERY_RIPESTAT_TIMEOUT value="10"
 /container/envs/add list=route-manager-envs key=DISCOVERY_ENABLE_BGPVIEW value="false"
 ```
 
 ## 8. Create and Start the MikroTik Container
 
 ```routeros
-/container/add file=disk1/route-manager-arm64.tar interface=veth-route-manager root-dir=disk1/route-manager-root mountlists=route-manager-data envlist=route-manager-envs name=route-manager start-on-boot=yes logging=yes
+/container/add file=disk1/route-manager-arm64-routeros.tar interface=veth-route-manager root-dir=disk1/route-manager-root mountlists=route-manager-data envlist=route-manager-envs name=route-manager start-on-boot=yes logging=yes
 /container/print
 /container/start [find where name=route-manager]
 ```

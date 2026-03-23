@@ -37,11 +37,9 @@
             </button>
             {% endif %}
           </form>
-          <form method="post" action="/sites/{{ site.id }}/rediscover">
-            <button class="button small warning" type="submit">
-              <i class="fa-solid fa-rotate"></i> Rediscover
-            </button>
-          </form>
+          <button id="rediscover-btn" class="button small warning" onclick="startRediscover({{ site.id }})">
+            <i class="fa-solid fa-rotate"></i> Rediscover
+          </button>
           <form method="post" action="/sites/{{ site.id }}/delete"
                 onsubmit="return confirm('Delete site and withdraw all routes?')">
             <button class="button small alert hollow" type="submit">
@@ -118,5 +116,43 @@
   </div>
 
 </div>
+
+<script>
+async function startRediscover(siteId) {
+  const btn = document.getElementById('rediscover-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Running…';
+
+  let jobId;
+  try {
+    const resp = await fetch('/sites/' + siteId + '/rediscover', { method: 'POST' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    jobId = data.job_id;
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Rediscover';
+    alert('Failed to start: ' + e.message);
+    return;
+  }
+
+  window.open('/logs/' + jobId, '_blank');
+
+  const poll = setInterval(async () => {
+    try {
+      const r = await fetch('/jobs/' + jobId);
+      const d = await r.json();
+      if (d.status === 'done' || d.status === 'failed') {
+        clearInterval(poll);
+        window.location.reload();
+      }
+    } catch (_) {
+      clearInterval(poll);
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Rediscover';
+    }
+  }, 2000);
+}
+</script>
 {% endblock %}
 

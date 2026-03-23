@@ -113,11 +113,17 @@ How you enforce this depends on your firewall stack:
 Build the image on your workstation:
 
 ```bash
-docker buildx build --platform linux/arm64 -t gobgp-route-manager:arm64 -f Dockerfile --load .
-docker save -o route-manager-arm64.tar gobgp-route-manager:arm64
+docker buildx build --platform linux/arm64 -t gobgp-route-manager:arm64 -f Dockerfile --output type=docker,dest=route-manager-arm64.tar,compression=uncompressed,force-compression=true,oci-mediatypes=false .
+python convert_routeros_image.py route-manager-arm64.tar route-manager-arm64-routeros.tar
 ```
 
-If you build from Docker Desktop on Windows, the same commands work in PowerShell with Docker Buildx enabled.
+If you build from Docker Desktop on Windows, the same command works in PowerShell with Docker Buildx enabled.
+
+Why this exact form matters:
+
+- Some Docker Desktop setups still export image tars in a newer blob layout (`oci-layout`, `index.json`, `blobs/...`) even when `type=docker` is requested.
+- `convert_routeros_image.py` rewrites that archive into a legacy `docker save`-style tar with `repositories`, per-layer `layer.tar`, and a top-level config JSON.
+- Upload `route-manager-arm64-routeros.tar` to the MikroTik, not the intermediate `route-manager-arm64.tar`.
 
 ## Part 3. Prepare MikroTik Storage and Networking
 
@@ -171,27 +177,45 @@ Create an env list for the container:
 /container/envs/add list=route-manager-envs key=APP_PORT value="8000"
 /container/envs/add list=route-manager-envs key=DATABASE_URL value="sqlite:////data/route_manager.db"
 /container/envs/add list=route-manager-envs key=GOBGP_ENABLED value="true"
+/container/envs/add list=route-manager-envs key=GOBGP_BIN value="gobgp"
+/container/envs/add list=route-manager-envs key=GOBGP_TIMEOUT value="10"
 /container/envs/add list=route-manager-envs key=GOBGP_HOST value="10.100.0.1"
 /container/envs/add list=route-manager-envs key=GOBGP_PORT value="50051"
 /container/envs/add list=route-manager-envs key=GOBGP_USE_GRPC value="true"
+/container/envs/add list=route-manager-envs key=GOBGP_GRPC_TIMEOUT value="10"
 /container/envs/add list=route-manager-envs key=GOBGP_GRPC_FALLBACK_CLI value="true"
+/container/envs/add list=route-manager-envs key=ROUTE_APPLY_WORKERS value="8"
 /container/envs/add list=route-manager-envs key=DISCOVERY_ENABLE_BGPVIEW value="false"
 ```
 
 Replace `10.100.0.1` with the VPS WireGuard IP that exposes goBGP gRPC.
 
-Optional tuning values you can also add:
+You can also add discovery tuning values when needed:
 
-- `DISCOVERY_MAX_IPS`
-- `DISCOVERY_IP_LOOKUP_TIMEOUT`
-- `DISCOVERY_PREFIX_LOOKUP_TIMEOUT`
-- `DISCOVERY_HTTP_RETRIES`
+```routeros
+/container/envs/add list=route-manager-envs key=IPINFO_TOKEN value=""
+/container/envs/add list=route-manager-envs key=DISCOVERY_MAX_IPS value="12"
+/container/envs/add list=route-manager-envs key=DISCOVERY_DNS_ATTEMPTS value="4"
+/container/envs/add list=route-manager-envs key=DISCOVERY_DNS_DELAY_MS value="250"
+/container/envs/add list=route-manager-envs key=DISCOVERY_IP_LOOKUP_TIMEOUT value="2"
+/container/envs/add list=route-manager-envs key=DISCOVERY_PREFIX_LOOKUP_TIMEOUT value="6"
+/container/envs/add list=route-manager-envs key=DISCOVERY_HTTP_RETRIES value="2"
+/container/envs/add list=route-manager-envs key=DISCOVERY_RIPESTAT_TIMEOUT value="10"
+/container/envs/add list=route-manager-envs key=DISCOVERY_ENABLE_BGPVIEW value="false"
+```
+
+Leave `IPINFO_TOKEN` empty if you do not use the IPinfo API.
+
+Notes:
+
+- `DB_HOST_DIR` is not needed on MikroTik because RouterOS mounts `/data` via `/container/mounts`, not Docker Compose host-volume interpolation.
+- `GOBGPD_API_HOSTS` is a VPS-side variable for the `gobgpd` container listener, not a `route-manager` env on MikroTik.
 
 ## Part 5. Upload and Start the Route Manager Container
 
 ### 1. Upload the Image Archive
 
-Upload `route-manager-arm64.tar` to the router `disk1/` using one of:
+Upload `route-manager-arm64-routeros.tar` to the router `disk1/` using one of:
 
 - WinBox Files
 - SCP
@@ -200,7 +224,7 @@ Upload `route-manager-arm64.tar` to the router `disk1/` using one of:
 ### 2. Create the Container from File
 
 ```routeros
-/container/add file=disk1/route-manager-arm64.tar interface=veth-route-manager root-dir=disk1/route-manager-root mountlists=route-manager-data envlist=route-manager-envs name=route-manager start-on-boot=yes logging=yes
+/container/add file=disk1/route-manager-arm64-routeros.tar interface=veth-route-manager root-dir=disk1/route-manager-root mountlists=route-manager-data envlist=route-manager-envs name=route-manager start-on-boot=yes logging=yes
 ```
 
 Then start it:

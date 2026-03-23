@@ -40,6 +40,8 @@ services:
       - gobgp-dev
     ports:
       - "8000:8000"
+    environment:
+      GOBGP_USE_GRPC: "false"
 
   gobgp-prod:
     <<: *gobgp-common
@@ -57,4 +59,5 @@ services:
     network_mode: host
     environment:
       GOBGP_HOST: 127.0.0.1
+      GOBGP_USE_GRPC: "false"
 
