@@ -111,8 +111,10 @@
             <span style="font-weight:600">{{ active_prefixes | length }}</span>
           </td>
           <td><code>{{ site.next_hop.ip }}</code></td>
-          <td>
-            {% if site.enabled %}
+          <td id="status-cell-{{ site.id }}">
+            {% if site.id in active_job_by_site %}
+            <span class="label warning"><i class="fa-solid fa-spinner fa-spin"></i> Rediscovering…</span>
+            {% elif site.enabled %}
             <span class="label success"><i class="fa-solid fa-circle-check"></i> Active</span>
             {% else %}
             <span class="label alert"><i class="fa-solid fa-circle-pause"></i> Paused</span>
@@ -131,11 +133,9 @@
                 </button>
                 {% endif %}
               </form>
-              <form method="post" action="/sites/{{ site.id }}/rediscover">
-                <button class="button tiny warning" type="submit">
-                  <i class="fa-solid fa-rotate"></i> Rediscover
-                </button>
-              </form>
+              <button class="button tiny warning" onclick="startRediscover({{ site.id }}, this)">
+                <i class="fa-solid fa-rotate"></i> Rediscover
+              </button>
               <form method="post" action="/sites/{{ site.id }}/delete"
                     onsubmit="return confirm('Delete site and withdraw all routes?')">
                 <button class="button tiny alert hollow" type="submit">
@@ -174,6 +174,63 @@
 
 </div>
 <script>
+async function cancelJobFromSites(jobId, btn) {
+  btn.disabled = true;
+  try { await fetch('/jobs/' + jobId + '/cancel', { method: 'POST' }); } catch (_) {}
+}
+
+function pollRediscoverJob(siteId, jobId, lastId) {
+  const statusCell = document.getElementById('status-cell-' + siteId);
+  const timer = setInterval(async () => {
+    try {
+      const r = await fetch('/jobs/' + jobId + '?after=' + lastId);
+      const d = await r.json();
+      if (d.logs && d.logs.length) {
+        lastId = d.logs[d.logs.length - 1].id;
+        const lastMsg = d.logs[d.logs.length - 1].message;
+        if (statusCell) {
+          statusCell.innerHTML =
+            '<span class="label warning"><i class="fa-solid fa-spinner fa-spin"></i> Rediscovering…</span>' +
+            ' <button class="button tiny alert hollow" style="margin:0 0 0 0.3rem;padding:0.2rem 0.4rem" onclick="cancelJobFromSites(' + jobId + ',this)" title="Stop job"><i class="fa-solid fa-stop"></i></button>' +
+            '<div style="font-size:0.75rem;color:#6b7280;margin-top:0.25rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' +
+            lastMsg.replace(/"/g, '&quot;') + '">' + lastMsg + '</div>';
+        }
+      }
+      if (d.status !== 'pending' && d.status !== 'running') {
+        clearInterval(timer);
+        window.location.reload();
+      }
+    } catch (_) {}
+  }, 3000);
+}
+
+async function startRediscover(siteId, btn) {
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+  const statusCell = document.getElementById('status-cell-' + siteId);
+  if (statusCell) {
+    statusCell.innerHTML = '<span class="label warning"><i class="fa-solid fa-spinner fa-spin"></i> Rediscovering…</span>';
+  }
+  try {
+    const resp = await fetch('/sites/' + siteId + '/rediscover', { method: 'POST' });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    window.open('/logs/' + data.job_id, '_blank');
+    pollRediscoverJob(siteId, data.job_id, 0);
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Rediscover';
+    if (statusCell) statusCell.innerHTML = '<span class="label alert"><i class="fa-solid fa-circle-xmark"></i> Error</span>';
+    alert('Rediscover failed: ' + e.message);
+  }
+}
+
+  // Resume polling for jobs that were already running when the page loaded
+  const activeJobs = {{ active_job_by_site | tojson }};
+  Object.entries(activeJobs).forEach(([siteId, jobId]) => {
+    pollRediscoverJob(parseInt(siteId), jobId, 0);
+  });
+
   document.querySelectorAll(".site-row").forEach((row) => {
     row.addEventListener("click", (event) => {
       if (event.target.closest("form,button,a,input,select,label")) return;

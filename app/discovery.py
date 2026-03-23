@@ -6,16 +6,29 @@ import re
 import socket
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 from requests import RequestException
 
 DISCOVERY_MODES: list[tuple[str, str]] = [
+    ("smart", "Smart: CT logs + HTTP crawl + RIPE + ASN filter (recommended)"),
     ("network_info", "RIPE Stat network-info (exact BGP prefix)"),
     ("rdap", "RDAP netblock (registry allocation)"),
     ("asn_prefixes", "ASN all prefixes (not recommended)"),
 ]
-DISCOVERY_MODE_DEFAULT = "network_info"
+DISCOVERY_MODE_DEFAULT = "smart"
+
+# Domains to skip when crawling HTML (analytics, ads, fonts — not routing-relevant)
+_CRAWL_SKIP_DOMAINS = {
+    "www.google.com", "google.com", "google-analytics.com", "analytics.google.com",
+    "googletagmanager.com", "doubleclick.net", "googlesyndication.com",
+    "fonts.googleapis.com", "fonts.gstatic.com",
+    "facebook.com", "facebook.net", "connect.facebook.net",
+    "twitter.com", "t.co",
+    "amazon-adsystem.com", "ads.yahoo.com",
+    "cdn.cookielaw.org", "optanon.blob.core.windows.net",
+}
 
 _RDAP_ENDPOINTS = [
     "https://rdap.arin.net/registry/ip/{ip}",
@@ -361,6 +374,117 @@ def _ip_to_prefix_rdap(ip: str, debug: Optional[list[str]] = None) -> tuple[Opti
     return None, None
 
 
+def _crtsh_subdomains(domain: str, debug: Optional[list[str]] = None) -> list[str]:
+    """Query crt.sh CT logs for all known subdomains of *domain*."""
+    url = f"https://crt.sh/?q=%.{domain}&output=json"
+    timeout = _int_env("DISCOVERY_SMART_CRAWL_TIMEOUT", 10)
+    try:
+        resp = requests.get(url, timeout=timeout, headers={"Accept": "application/json"})
+        if resp.status_code != 200:
+            _dbg(debug, f"crtsh domain={domain} status={resp.status_code}")
+            return []
+        entries = resp.json()
+    except (RequestException, ValueError) as exc:
+        _dbg(debug, f"crtsh domain={domain} error={exc}")
+        return []
+
+    seen: dict[str, None] = {}
+    for entry in entries:
+        name_value = entry.get("name_value") or entry.get("common_name") or ""
+        for name in name_value.splitlines():
+            name = name.strip().lstrip("*.")
+            if name and "." in name and not name.startswith("*"):
+                seen.setdefault(name, None)
+
+    found = list(seen.keys())
+    _dbg(debug, f"crtsh domain={domain} subdomains={len(found)}")
+    return found
+
+
+def _http_crawl_domains(domain: str, debug: Optional[list[str]] = None) -> list[str]:
+    """Fetch the main page of *domain* and extract unique hostnames from resource URLs."""
+    url = f"https://{domain}"
+    timeout = _int_env("DISCOVERY_SMART_CRAWL_TIMEOUT", 10)
+    try:
+        resp = requests.get(
+            url, timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; route-manager/1.0)"},
+            allow_redirects=True,
+        )
+    except RequestException as exc:
+        _dbg(debug, f"crawl domain={domain} error={exc}")
+        return []
+
+    found: dict[str, None] = {}
+    # Regex covers src="...", href="...", action="...", url('...'), url("...")
+    pattern = re.compile(r'(?:src|href|action|url)\s*[=:(]\s*["\']?(https?://[^\s"\'<>)]+)', re.IGNORECASE)
+    for match in pattern.finditer(resp.text):
+        raw_url = match.group(1)
+        try:
+            host = urlparse(raw_url).netloc.lower()
+        except Exception:
+            continue
+        # Strip port if present
+        host = host.split(":")[0]
+        if not host or host == domain or host in _CRAWL_SKIP_DOMAINS:
+            continue
+        # Skip generic TLDs that are clearly not related infrastructure
+        if host.endswith(".google.com") and domain not in ("google.com", "youtube.com", "googlevideo.com"):
+            continue
+        found.setdefault(host, None)
+
+    result = list(found.keys())
+    _dbg(debug, f"crawl domain={domain} related_hosts={len(result)} sample={result[:6]}")
+    return result
+
+
+def _asn_prefixes_filtered(
+    asn: str,
+    known_ips: set[str],
+    direct_prefix_nets: list,
+    debug: Optional[list[str]] = None,
+) -> list[str]:
+    """Return ASN prefixes that either contain a resolved IP or are a subnet of a direct prefix.
+
+    Two-pass filter:
+    1. IP membership  — catches prefixes that contain one of our resolved IPs directly.
+    2. Subnet-of      — catches more-specific /24 CDN prefixes inside a larger aggregate that
+                        RIPE returned for our IP (e.g. all /24s within 192.178.0.0/15).
+    This handles CDN domains (googlevideo.com, youtube.com) where a single GeoDNS lookup gives
+    only one IP in a large aggregate, while the ASN announces hundreds of more-specific blocks
+    within that aggregate for different PoPs.
+    """
+    all_prefixes, source = _asn_prefixes_ripestat(asn, debug=debug)
+    if not all_prefixes:
+        all_prefixes, source = _asn_prefixes_ipinfo(asn, debug=debug)
+
+    ip_objs = []
+    for ip in known_ips:
+        try:
+            ip_objs.append(ip_address(ip))
+        except ValueError:
+            pass
+
+    matched = []
+    subnet_matched = 0
+    for prefix_str in all_prefixes:
+        try:
+            net = ip_network(prefix_str, strict=False)
+        except ValueError:
+            continue
+        # Pass 1: resolved IP is inside this prefix
+        if any(ip_obj in net for ip_obj in ip_objs):
+            matched.append(prefix_str)
+            continue
+        # Pass 2: this prefix is a more-specific subnet of one of our direct RIPE prefixes
+        if any(net.subnet_of(dp) for dp in direct_prefix_nets if dp.version == net.version):
+            matched.append(prefix_str)
+            subnet_matched += 1
+
+    _dbg(debug, f"asn_filter asn={asn} source={source} total={len(all_prefixes)} matched={len(matched)} (subnet_expansion={subnet_matched})")
+    return matched
+
+
 def _optimize_prefixes(prefixes: list[str]) -> list[str]:
     networks_v4 = []
     networks_v6 = []
@@ -395,7 +519,108 @@ def discover_domain(
     if len(resolved_ips) > len(ips):
         _dbg(debug, f"dns truncated_ips={len(ips)} of {len(resolved_ips)}")
 
-    if mode == "asn_prefixes":
+    if mode == "smart":
+        # --- Phase 1: domain expansion ---
+        max_subdomains = _int_env("DISCOVERY_SMART_MAX_SUBDOMAINS", 80)
+
+        # 1a: CT logs → subdomains of the input domain
+        ct_subdomains = _crtsh_subdomains(domain, debug=debug)
+
+        # 1b: HTTP crawl → cross-domain resources (e.g. googlevideo.com from youtube.com)
+        crawled_hosts = _http_crawl_domains(domain, debug=debug)
+
+        all_domains: list[str] = [domain] + ct_subdomains[:max_subdomains] + crawled_hosts
+        # Deduplicate while preserving order; input domain is always first
+        seen_domains: dict[str, None] = {}
+        for d in all_domains:
+            seen_domains.setdefault(d, None)
+        all_domains = list(seen_domains.keys())
+        _dbg(debug, f"smart domain_expansion total={len(all_domains)}")
+
+        # --- Phase 2: bulk DNS resolution ---
+        all_ips: dict[str, None] = {}
+        for d in all_domains:
+            for ip in _resolve_ips(d, debug=debug):
+                all_ips.setdefault(ip, None)
+        ip_set = set(all_ips.keys())
+        _dbg(debug, f"smart bulk_dns unique_ips={len(ip_set)}")
+
+        if not ip_set:
+            return None, list(ip_set), []
+
+        # --- Phase 3: exact prefix per IP (RIPE Stat network-info) ---
+        # Deduplicate: one representative IP per /24 is enough — same prefix will be returned
+        rep_ips: dict[str, str] = {}  # /24 network string → one IP
+        for ip in ip_set:
+            try:
+                net24 = str(ip_network(f"{ip}/24", strict=False))
+            except ValueError:
+                net24 = ip
+            rep_ips.setdefault(net24, ip)
+        _dbg(debug, f"smart ripe_lookups={len(rep_ips)} (deduped from {len(ip_set)} ips)")
+
+        direct_prefixes: dict[str, None] = {}
+        asns: dict[str, None] = {}
+        primary_asn: Optional[str] = None
+        for ip in rep_ips.values():
+            prefix, asn = _ip_to_prefix_ripestat(ip, debug=debug)
+            if asn:
+                asns.setdefault(asn, None)
+                if not primary_asn:
+                    primary_asn = asn
+            if prefix:
+                direct_prefixes.setdefault(prefix, None)
+
+        _dbg(debug, f"smart direct_prefixes={len(direct_prefixes)} asns={list(asns.keys())}")
+
+        # Fallback ASN detection if RIPE didn't return one
+        if not primary_asn:
+            for ip in ip_set:
+                asn, _ = _ip_to_asn(ip, debug=debug)
+                if asn:
+                    primary_asn = asn
+                    asns.setdefault(asn, None)
+                    break
+
+        # --- Phase 4: ASN expansion (strategy depends on whether domain expansion worked) ---
+        expanded_prefixes = set(direct_prefixes.keys())
+
+        # If crt.sh and crawl both failed, all_domains still equals [domain] (no expansion).
+        # For CDN-only domains (googlevideo.com, ytimg.com, etc.) this means we only have 1-2
+        # local GeoDNS IPs and the filtered approach would miss CDN PoPs in other IP blocks.
+        # In that case fall back to fetching ALL ASN prefixes, same as asn_prefixes mode.
+        domain_was_expanded = len(all_domains) > 1
+        _dbg(debug, f"smart domain_was_expanded={domain_was_expanded}")
+
+        if not domain_was_expanded:
+            max_asn_prefixes = _int_env("DISCOVERY_SMART_MAX_ASN_PREFIXES", 500)
+            for asn in asns:
+                all_asn_pref, _ = _asn_prefixes(asn, debug=debug)
+                if len(all_asn_pref) > max_asn_prefixes:
+                    _dbg(debug, f"smart fallback=direct_only asn={asn} asn_total={len(all_asn_pref)} exceeds threshold={max_asn_prefixes} (large multi-tenant CDN, using direct prefixes only)")
+                else:
+                    _dbg(debug, f"smart fallback=full_asn asn={asn} asn_total={len(all_asn_pref)}")
+                    expanded_prefixes.update(all_asn_pref)
+        else:
+            # Normal path: only include ASN prefixes that overlap with what we actually resolved.
+            # Build ip_network objects for the direct RIPE prefixes for the subnet filter.
+            direct_prefix_nets = []
+            for p in direct_prefixes:
+                try:
+                    direct_prefix_nets.append(ip_network(p, strict=False))
+                except ValueError:
+                    pass
+            _dbg(debug, f"smart direct_prefix_nets={[str(n) for n in direct_prefix_nets]}")
+            for asn in asns:
+                filtered = _asn_prefixes_filtered(asn, ip_set, direct_prefix_nets, debug=debug)
+                expanded_prefixes.update(filtered)
+
+        _dbg(debug, f"smart expanded_prefixes={len(expanded_prefixes)}")
+        optimized = _optimize_prefixes(list(expanded_prefixes))
+        _dbg(debug, f"smart final_prefixes={len(optimized)}")
+        return primary_asn, list(ip_set)[:max_ips], optimized
+
+    elif mode == "asn_prefixes":
         asns = []
         for ip in ips:
             asn, provider = _ip_to_asn(ip, debug=debug)

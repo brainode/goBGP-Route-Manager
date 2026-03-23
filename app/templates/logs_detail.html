@@ -1,0 +1,141 @@
+<!-- SPDX-License-Identifier: GPL-2.0-only -->
+{% extends "base.html" %}
+{% block content %}
+<div class="grid-x grid-margin-x">
+  <div class="cell large-3">
+    <div class="card">
+      <div class="card-divider">
+        <i class="fa-solid fa-circle-nodes"></i> Job #{{ job.id }}
+      </div>
+      <div class="card-section" style="font-size:0.88rem">
+        <p style="margin:0.2rem 0">
+          <strong>Type:</strong> <code>{{ job.job_type }}</code>
+        </p>
+        <p style="margin:0.2rem 0">
+          <strong>Site:</strong>
+          {% if site %}
+          <a href="/sites/{{ site.id }}">{{ site.domain }}</a>
+          {% else %}—{% endif %}
+        </p>
+        <p style="margin:0.2rem 0">
+          <strong>Started:</strong> {{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+        </p>
+        <p style="margin:0.2rem 0">
+          <strong>Finished:</strong>
+          <span id="finished-at">{{ job.finished_at.strftime('%Y-%m-%d %H:%M:%S') if job.finished_at else '—' }}</span>
+        </p>
+        <p style="margin:0.6rem 0 0.2rem">
+          <strong>Status:</strong>
+          <span id="status-badge">
+            {% if job.status == 'done' %}
+            <span class="label success"><i class="fa-solid fa-circle-check"></i> done</span>
+            {% elif job.status == 'running' %}
+            <span class="label warning"><i class="fa-solid fa-spinner fa-spin"></i> running</span>
+            {% elif job.status == 'failed' %}
+            <span class="label alert"><i class="fa-solid fa-circle-xmark"></i> failed</span>
+            {% elif job.status == 'cancelled' %}
+            <span class="label secondary"><i class="fa-solid fa-ban"></i> cancelled</span>
+            {% else %}
+            <span class="label secondary">{{ job.status }}</span>
+            {% endif %}
+          </span>
+        </p>
+      </div>
+    </div>
+    {% if job.status in ('pending', 'running') %}
+    <button id="cancel-btn" class="button alert hollow expanded" style="margin-top:0.5rem"
+            onclick="cancelJob({{ job.id }})">
+      <i class="fa-solid fa-stop"></i> Stop Job
+    </button>
+    {% endif %}
+    <a class="button secondary hollow expanded" href="/logs" style="margin-top:0.5rem">
+      <i class="fa-solid fa-arrow-left"></i> All Jobs
+    </a>
+  </div>
+
+  <div class="cell large-9">
+    <div class="card">
+      <div class="card-divider" style="display:flex;align-items:center;justify-content:space-between">
+        <span>
+          <i class="fa-solid fa-terminal"></i> Log Output
+          <span id="live-indicator" style="margin-left:0.5rem;font-size:0.78rem;font-weight:normal;color:#6b7280">
+          {% if job.status in ('pending', 'running') %}
+          <i class="fa-solid fa-circle fa-beat" style="color:#f59e0b"></i> live
+          {% endif %}
+        </span>
+        </span>
+        <a class="button tiny secondary hollow" style="margin:0"
+           href="/logs/{{ job.id }}/download" download="job-{{ job.id }}.log">
+          <i class="fa-solid fa-download"></i> Download
+        </a>
+      </div>
+      <div class="card-section" style="padding:0">
+        <pre id="log-output" style="margin:0;padding:0.75rem 1rem;background:#0f172a;color:#e2e8f0;font-size:0.8rem;min-height:200px;max-height:75vh;overflow-y:auto;border-radius:0 0 4px 4px;white-space:pre-wrap;word-break:break-all">{% for l in logs %}{{ l.message }}
+{% endfor %}</pre>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+async function cancelJob(jobId) {
+  const btn = document.getElementById('cancel-btn');
+  if (!confirm('Stop this job?')) return;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Stopping…';
+  try {
+    await fetch('/jobs/' + jobId + '/cancel', { method: 'POST' });
+  } catch (_) {}
+}
+
+(function () {
+  const jobId   = {{ job.id }};
+  const initial = '{{ job.status }}';
+  if (initial !== 'pending' && initial !== 'running') return;
+
+  const pre     = document.getElementById('log-output');
+  const badge   = document.getElementById('status-badge');
+  const live    = document.getElementById('live-indicator');
+  const fin     = document.getElementById('finished-at');
+  let lastId    = {% if logs %}{{ logs[-1].id }}{% else %}0{% endif %};
+
+  function renderBadge(status) {
+    const icons = {
+      done:      '<span class="label success"><i class="fa-solid fa-circle-check"></i> done</span>',
+      failed:    '<span class="label alert"><i class="fa-solid fa-circle-xmark"></i> failed</span>',
+      running:   '<span class="label warning"><i class="fa-solid fa-spinner fa-spin"></i> running</span>',
+      cancelled: '<span class="label secondary"><i class="fa-solid fa-ban"></i> cancelled</span>',
+    };
+    badge.innerHTML = icons[status] || '<span class="label secondary">' + status + '</span>';
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch('/jobs/' + jobId + '?after=' + lastId);
+      const d = await r.json();
+
+      d.logs.forEach(function(entry) {
+        pre.textContent += entry.message + '\n';
+        lastId = entry.id;
+      });
+      pre.scrollTop = pre.scrollHeight;
+
+      if (d.status !== 'pending' && d.status !== 'running') {
+        clearInterval(timer);
+        renderBadge(d.status);
+        live.innerHTML = '';
+        if (d.finished_at) {
+          fin.textContent = d.finished_at.replace('T', ' ').slice(0, 19);
+        }
+        const cancelBtn = document.getElementById('cancel-btn');
+        if (cancelBtn) cancelBtn.remove();
+      }
+    } catch (_) {}
+  }
+
+  const timer = setInterval(poll, 2000);
+  // scroll to bottom on load
+  pre.scrollTop = pre.scrollHeight;
+})();
+</script>
+{% endblock %}

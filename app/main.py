@@ -6,7 +6,7 @@ from ipaddress import ip_address, ip_network
 import logging
 import os
 import re
-from threading import Lock
+from threading import Event, Lock
 from typing import Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
@@ -20,11 +20,31 @@ from sqlalchemy.orm import Session, joinedload
 from .database import Base, SessionLocal, engine, get_db
 from .discovery import discover_domain, DISCOVERY_MODES, DISCOVERY_MODE_DEFAULT
 from .gobgp_client import GoBGPClient
-from .models import NextHop, Prefix, Setting, Site
+from .models import Job, JobLog, NextHop, Prefix, Setting, Site
+
+
+class LoggingList(list):
+    """list subclass that writes each appended message to the job_logs table immediately."""
+
+    def __init__(self, job_id: int, db) -> None:
+        super().__init__()
+        self._job_id = job_id
+        self._db = db
+
+    def append(self, message: str) -> None:  # type: ignore[override]
+        super().append(message)
+        try:
+            entry = JobLog(job_id=self._job_id, message=str(message))
+            self._db.add(entry)
+            self._db.commit()
+        except Exception:
+            pass
 
 _DISCOVERY_MODE_KEY = "discovery_mode"
 _MAINTENANCE_STATUS_KEY = "maintenance_status"
+_IPV6_ENABLED_KEY = "ipv6_enabled"
 _maintenance_lock = Lock()
+_cancel_flags: dict[int, Event] = {}
 
 
 def _get_discovery_mode(db: Session) -> str:
@@ -45,6 +65,11 @@ def _set_setting_value(db: Session, key: str, value: str) -> None:
         row.value = value
     else:
         db.add(Setting(key=key, value=value))
+
+
+def _get_ipv6_enabled(db: Session) -> bool:
+    val = _get_setting_value(db, _IPV6_ENABLED_KEY)
+    return val != "false"
 
 
 def _set_maintenance_status(message: str) -> None:
@@ -117,8 +142,11 @@ def _sync_site(db: Session, site: Site) -> dict[str, int | str | bool]:
     attempted = 0
     succeeded = 0
     failed = 0
+    ipv6_enabled = _get_ipv6_enabled(db)
     for prefix in site.prefixes:
         if not prefix.is_active:
+            continue
+        if not ipv6_enabled and ":" in prefix.cidr:
             continue
         attempted += 1
         ok = _apply_prefix(db, site, prefix, announce=site.enabled)
@@ -156,31 +184,86 @@ def _sync_site_by_id(site_id: int) -> None:
         db.close()
 
 
-def _rediscover_site_state(db: Session, site: Site, apply_changes: bool = True) -> dict[str, int | str | bool | None]:
+def _rediscover_site_background(site_id: int, job_id: int) -> None:
+    cancel_event = _cancel_flags.get(job_id, Event())
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job:
+            job.status = "running"
+            db.commit()
+
+        site = db.query(Site).options(joinedload(Site.next_hop), joinedload(Site.prefixes)).filter(Site.id == site_id).first()
+        if not site:
+            if job:
+                job.status = "failed"
+                job.finished_at = datetime.utcnow()
+                db.commit()
+            return
+
+        debug = LoggingList(job_id, db)
+        result = _rediscover_site_state(db, site, apply_changes=True, debug=debug, cancel_event=cancel_event)
+
+        if job:
+            db.refresh(job)
+            if job.status != "cancelled":
+                job.status = "done" if result["ok"] else "failed"
+                job.finished_at = datetime.utcnow()
+                db.commit()
+    except Exception as exc:
+        logger.exception("rediscover_background failed site_id=%s job_id=%s", site_id, job_id)
+        try:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job and job.status not in ("cancelled",):
+                job.status = "failed"
+                job.finished_at = datetime.utcnow()
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        _cancel_flags.pop(job_id, None)
+        db.close()
+
+
+def _rediscover_site_state(
+    db: Session,
+    site: Site,
+    apply_changes: bool = True,
+    debug: Optional[list[str]] = None,
+    cancel_event: Optional[Event] = None,
+) -> dict[str, int | str | bool | None]:
     site = db.query(Site).options(joinedload(Site.next_hop), joinedload(Site.prefixes)).filter(Site.id == site.id).first()
     if not site:
         return {"ok": False, "site_id": 0, "added": 0, "removed": 0, "discovered": 0, "asn": None}
 
+    debug_lines: list[str] = debug if debug is not None else []
     discovery_mode = _get_discovery_mode(db)
-    debug_lines: list[str] = []
+    debug_lines.append(f"[start] site_id={site.id} domain={site.domain} mode={discovery_mode} apply_changes={apply_changes}")
+
     try:
         asn, _ips, prefixes = discover_domain(site.domain, debug=debug_lines, mode=discovery_mode)
     except Exception as exc:
         logger.exception("rediscover failed site_id=%s domain=%s error=%s", site.id, site.domain, exc)
+        debug_lines.append(f"[error] discovery exception: {exc}")
         return {"ok": False, "site_id": site.id, "added": 0, "removed": 0, "discovered": 0, "asn": None}
 
-    for line in debug_lines[:40]:
-        logger.info("rediscover debug site_id=%s domain=%s %s", site.id, site.domain, _sanitize_log_message(line))
-    if len(debug_lines) > 40:
-        logger.info(
-            "rediscover debug site_id=%s domain=%s truncated_lines=%s",
-            site.id,
-            site.domain,
-            len(debug_lines) - 40,
-        )
+    if debug is None:
+        for line in debug_lines[:40]:
+            logger.info("rediscover debug site_id=%s domain=%s %s", site.id, site.domain, _sanitize_log_message(line))
+        if len(debug_lines) > 40:
+            logger.info("rediscover debug site_id=%s domain=%s truncated_lines=%s", site.id, site.domain, len(debug_lines) - 40)
+
+    debug_lines.append(f"[discovery] asn={asn} prefixes_found={len(prefixes)}")
+
+    if not _get_ipv6_enabled(db):
+        ipv6_count = sum(1 for p in prefixes if ":" in p)
+        if ipv6_count:
+            prefixes = [p for p in prefixes if ":" not in p]
+            debug_lines.append(f"[ipv6_filter] dropped {ipv6_count} IPv6 prefixes (ipv6_enabled=false)")
 
     if not asn and not prefixes:
         logger.warning("rediscover empty result site_id=%s domain=%s", site.id, site.domain)
+        debug_lines.append("[error] empty discovery result — no ASN and no prefixes returned")
         return {"ok": False, "site_id": site.id, "added": 0, "removed": 0, "discovered": 0, "asn": None}
 
     existing_discovery = [p for p in site.prefixes if p.source == "discovery"]
@@ -190,10 +273,17 @@ def _rediscover_site_state(db: Session, site: Site, apply_changes: bool = True) 
     to_remove = [p for p in existing_discovery if p.cidr not in target]
     to_add = sorted(target - current)
 
+    debug_lines.append(f"[diff] to_add={len(to_add)} to_remove={len(to_remove)} unchanged={len(target & current)}")
+
+    if cancel_event and cancel_event.is_set():
+        debug_lines.append("[cancelled] job cancelled by user — BGP changes skipped")
+        return {"ok": False, "site_id": site.id, "added": 0, "removed": 0, "discovered": len(target), "asn": asn}
+
     if apply_changes and site.enabled:
         for prefix in to_remove:
             if prefix.is_active:
-                _apply_prefix(db, site, prefix, announce=False)
+                ok, msg = gobgp.del_route(prefix.cidr, site.next_hop.ip)
+                debug_lines.append(f"[bgp withdraw] {prefix.cidr} → {'ok' if ok else 'error'}: {msg}")
 
     for prefix in to_remove:
         db.delete(prefix)
@@ -204,27 +294,27 @@ def _rediscover_site_state(db: Session, site: Site, apply_changes: bool = True) 
 
     added = 0
     for cidr in to_add:
+        if cancel_event and cancel_event.is_set():
+            debug_lines.append("[cancelled] job cancelled by user — remaining BGP announces skipped")
+            break
         prefix = Prefix(site_id=site.id, cidr=cidr, source="discovery")
         db.add(prefix)
         try:
             db.commit()
         except IntegrityError:
             db.rollback()
+            debug_lines.append(f"[db skip] {cidr} already exists")
             continue
         db.refresh(prefix)
         added += 1
         if apply_changes and site.enabled:
-            _apply_prefix(db, site, prefix, announce=True)
+            ok, msg = gobgp.add_route(prefix.cidr, site.next_hop.ip)
+            debug_lines.append(f"[bgp announce] {prefix.cidr} → {'ok' if ok else 'error'}: {msg}")
 
+    debug_lines.append(f"[done] added={added} removed={len(to_remove)} total_prefixes={len(target)}")
     logger.info(
         "rediscover done site_id=%s domain=%s asn=%s prefixes_total=%s added=%s removed=%s apply_changes=%s",
-        site.id,
-        site.domain,
-        asn,
-        len(target),
-        added,
-        len(to_remove),
-        apply_changes,
+        site.id, site.domain, asn, len(target), added, len(to_remove), apply_changes,
     )
     return {
         "ok": True,
@@ -368,12 +458,19 @@ def gobgp_status(request: Request) -> HTMLResponse:
 def list_sites(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     sites = db.query(Site).options(joinedload(Site.next_hop), joinedload(Site.prefixes)).order_by(Site.domain.asc()).all()
     next_hops = db.query(NextHop).order_by(NextHop.ip.asc()).all()
+    active_jobs = (
+        db.query(Job)
+        .filter(Job.status.in_(["pending", "running"]), Job.site_id.isnot(None))
+        .all()
+    )
+    active_job_by_site = {j.site_id: j.id for j in active_jobs}
     return templates.TemplateResponse(
         "sites.html",
         {
             "request": request,
             "sites": sites,
             "next_hops": next_hops,
+            "active_job_by_site": active_job_by_site,
             "title": "Sites",
         },
     )
@@ -404,35 +501,14 @@ def create_site(
     db.refresh(site)
 
     if discover == "on":
-        discovery_mode = _get_discovery_mode(db)
-        debug_lines: list[str] = []
-        try:
-            asn, ips, prefixes = discover_domain(domain, debug=debug_lines, mode=discovery_mode)
-        except Exception as exc:
-            logger.exception("discover failed domain=%s error=%s", domain, exc)
-            asn, prefixes = None, []
-            ips = []
-
-        logger.info("discover domain=%s ips=%s asn=%s prefixes_count=%s", domain, ips, asn, len(prefixes))
-        if prefixes:
-            logger.info("discover prefixes domain=%s prefixes=%s", domain, prefixes)
-        else:
-            logger.warning("discover prefixes empty domain=%s", domain)
-        for line in debug_lines[:40]:
-            logger.info("discover debug domain=%s %s", domain, _sanitize_log_message(line))
-
-        site.asn = asn
+        job = Job(job_type="rediscover_site", site_id=site.id, status="pending")
+        db.add(job)
         db.commit()
-        for cidr in prefixes:
-            db.add(Prefix(site_id=site.id, cidr=cidr, source="discovery"))
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-
-    if site.enabled:
+        db.refresh(job)
+        _cancel_flags[job.id] = Event()
+        background_tasks.add_task(_rediscover_site_background, site.id, job.id)
+    elif site.enabled:
         background_tasks.add_task(_sync_site_by_id, site.id)
-        logger.info("sync scheduled site_id=%s domain=%s", site.id, site.domain)
 
     return RedirectResponse(url="/sites", status_code=303)
 
@@ -450,12 +526,104 @@ def toggle_site(site_id: int, background_tasks: BackgroundTasks, db: Session = D
 
 
 @app.post("/sites/{site_id}/rediscover")
-def rediscover_site(site_id: int, db: Session = Depends(get_db)):
-    site = db.query(Site).options(joinedload(Site.next_hop), joinedload(Site.prefixes)).filter(Site.id == site_id).first()
+def rediscover_site(site_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    site = db.query(Site).filter(Site.id == site_id).first()
     if not site:
         raise HTTPException(status_code=404, detail="site not found")
-    _rediscover_site_state(db, site, apply_changes=True)
-    return RedirectResponse(url="/sites", status_code=303)
+    existing = (
+        db.query(Job)
+        .filter(Job.site_id == site_id, Job.status.in_(["pending", "running"]))
+        .first()
+    )
+    if existing:
+        return JSONResponse({"job_id": existing.id, "already_running": True})
+    job = Job(job_type="rediscover_site", site_id=site_id, status="pending")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    _cancel_flags[job.id] = Event()
+    background_tasks.add_task(_rediscover_site_background, site_id, job.id)
+    return JSONResponse({"job_id": job.id, "already_running": False})
+
+
+@app.get("/jobs/{job_id}")
+def get_job_status(job_id: int, after: int = 0, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    logs_q = db.query(JobLog).filter(JobLog.job_id == job_id)
+    if after:
+        logs_q = logs_q.filter(JobLog.id > after)
+    logs = logs_q.order_by(JobLog.id.asc()).all()
+    return JSONResponse({
+        "id": job.id,
+        "status": job.status,
+        "site_id": job.site_id,
+        "created_at": job.created_at.isoformat(),
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+        "logs": [{"id": l.id, "message": l.message} for l in logs],
+    })
+
+
+@app.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: int, db: Session = Depends(get_db)):
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    if job.status not in ("pending", "running"):
+        return JSONResponse({"ok": False, "reason": "job not cancellable"})
+    job.status = "cancelled"
+    job.finished_at = datetime.utcnow()
+    db.commit()
+    event = _cancel_flags.get(job_id)
+    if event:
+        event.set()
+    return JSONResponse({"ok": True})
+
+
+@app.get("/logs", response_class=HTMLResponse)
+def logs_list(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    jobs = db.query(Job).order_by(Job.id.desc()).limit(100).all()
+    return templates.TemplateResponse("logs.html", {"request": request, "jobs": jobs, "title": "Logs"})
+
+
+@app.get("/logs/{job_id}/download")
+def log_download(job_id: int, db: Session = Depends(get_db)):
+    from fastapi.responses import PlainTextResponse
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    logs = db.query(JobLog).filter(JobLog.job_id == job_id).order_by(JobLog.id.asc()).all()
+    site = db.query(Site).filter(Site.id == job.site_id).first() if job.site_id else None
+    header = (
+        f"Job #{job.id} | type={job.job_type} | status={job.status}\n"
+        f"Site: {site.domain if site else '—'}\n"
+        f"Started:  {job.created_at.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"Finished: {job.finished_at.strftime('%Y-%m-%d %H:%M:%S') if job.finished_at else '—'}\n"
+        f"{'─' * 60}\n"
+    )
+    body = "\n".join(l.message for l in logs)
+    filename = f"job-{job_id}.log"
+    return PlainTextResponse(
+        content=header + body,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/logs/{job_id}", response_class=HTMLResponse)
+def log_detail(job_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="job not found")
+    site = db.query(Site).filter(Site.id == job.site_id).first() if job.site_id else None
+    logs = db.query(JobLog).filter(JobLog.job_id == job_id).order_by(JobLog.id.asc()).all()
+    return templates.TemplateResponse("logs_detail.html", {
+        "request": request,
+        "job": job,
+        "site": site,
+        "logs": logs,
+        "title": f"Job #{job_id}",
+    })
 
 
 @app.post("/sites/{site_id}/delete")
@@ -585,6 +753,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
             "enabled_sites_count": enabled_sites_count,
             "active_prefixes_count": active_prefixes_count,
             "maintenance_status": _get_setting_value(db, _MAINTENANCE_STATUS_KEY),
+            "ipv6_enabled": _get_ipv6_enabled(db),
         },
     )
 
@@ -599,6 +768,13 @@ def set_discovery_mode(mode: str = Form(...), db: Session = Depends(get_db)):
         row.value = mode
     else:
         db.add(Setting(key=_DISCOVERY_MODE_KEY, value=mode))
+    db.commit()
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+@app.post("/settings/ipv6-enabled")
+def set_ipv6_enabled(enabled: Optional[str] = Form(None), db: Session = Depends(get_db)):
+    _set_setting_value(db, _IPV6_ENABLED_KEY, "true" if enabled == "on" else "false")
     db.commit()
     return RedirectResponse(url="/settings", status_code=303)
 
