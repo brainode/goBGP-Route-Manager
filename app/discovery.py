@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0-only
 from collections import Counter
-from ipaddress import ip_address, ip_network, collapse_addresses, summarize_address_range
+from ipaddress import ip_address, ip_network, summarize_address_range
 import os
 import re
 import socket
@@ -95,6 +95,41 @@ def _resolve_ips(domain: str, debug: Optional[list[str]] = None) -> list[str]:
 
     ips = list(seen.keys())
     _dbg(debug, f"dns merged_ipv4_count={len(ips)}")
+    return ips
+
+
+def _resolve_ips_doh(domain: str, debug: Optional[list[str]] = None) -> list[str]:
+    """Query public DoH resolvers to find anycast IPs invisible to the local system resolver."""
+    resolvers = [
+        ("google", "https://dns.google/resolve"),
+        ("cloudflare", "https://cloudflare-dns.com/dns-query"),
+    ]
+    timeout = _int_env("DISCOVERY_DNS_TIMEOUT", 5)
+    seen: dict[str, None] = {}
+
+    for name, base_url in resolvers:
+        try:
+            resp = requests.get(
+                base_url,
+                params={"name": domain, "type": "A"},
+                headers={"Accept": "application/dns-json"},
+                timeout=timeout,
+            )
+            if resp.status_code != 200:
+                _dbg(debug, f"doh resolver={name} domain={domain} status={resp.status_code}")
+                continue
+            data = resp.json()
+            for record in data.get("Answer") or []:
+                if record.get("type") == 1:  # A record
+                    ip = record.get("data", "").strip()
+                    if ip and ":" not in ip:
+                        seen.setdefault(ip, None)
+        except (RequestException, ValueError) as exc:
+            _dbg(debug, f"doh resolver={name} domain={domain} error={exc}")
+
+    ips = list(seen.keys())
+    if ips:
+        _dbg(debug, f"doh domain={domain} ips={ips}")
     return ips
 
 
@@ -448,12 +483,17 @@ def _asn_prefixes_filtered(
 
     Two-pass filter:
     1. IP membership  — catches prefixes that contain one of our resolved IPs directly.
-    2. Subnet-of      — catches more-specific /24 CDN prefixes inside a larger aggregate that
-                        RIPE returned for our IP (e.g. all /24s within 192.178.0.0/15).
-    This handles CDN domains (googlevideo.com, youtube.com) where a single GeoDNS lookup gives
-    only one IP in a large aggregate, while the ASN announces hundreds of more-specific blocks
-    within that aggregate for different PoPs.
+    2. Subnet-of      — catches more-specific /24 CDN prefixes inside a tight aggregate that
+                        RIPE returned for our IP (e.g. /24s within a /22 Fastly PoP block).
+                        Only applied when the direct RIPE prefix is >= SUBNET_EXPAND_MIN_PREFIXLEN
+                        to avoid exploding into hundreds of prefixes for large Google/AWS aggregates
+                        like 142.250.0.0/15 or 35.190.0.0/16.
     """
+    # Subnet expansion threshold: only expand direct prefixes that are this specific or more.
+    # /20 = 4096 addresses. Anything larger (/19, /16, /15 …) is a multi-tenant aggregate
+    # and should not trigger sub-prefix enumeration.
+    subnet_expand_min = _int_env("DISCOVERY_SUBNET_EXPAND_MIN_PREFIXLEN", 20)
+
     all_prefixes, source = _asn_prefixes_ripestat(asn, debug=debug)
     if not all_prefixes:
         all_prefixes, source = _asn_prefixes_ipinfo(asn, debug=debug)
@@ -464,6 +504,9 @@ def _asn_prefixes_filtered(
             ip_objs.append(ip_address(ip))
         except ValueError:
             pass
+
+    # Only use direct prefixes that are specific enough for subnet expansion
+    narrow_direct = [dp for dp in direct_prefix_nets if dp.prefixlen >= subnet_expand_min]
 
     matched = []
     subnet_matched = 0
@@ -476,8 +519,8 @@ def _asn_prefixes_filtered(
         if any(ip_obj in net for ip_obj in ip_objs):
             matched.append(prefix_str)
             continue
-        # Pass 2: this prefix is a more-specific subnet of one of our direct RIPE prefixes
-        if any(net.subnet_of(dp) for dp in direct_prefix_nets if dp.version == net.version):
+        # Pass 2: this prefix is a more-specific subnet of a sufficiently narrow direct prefix
+        if any(net.subnet_of(dp) for dp in narrow_direct if dp.version == net.version):
             matched.append(prefix_str)
             subnet_matched += 1
 
@@ -498,9 +541,58 @@ def _optimize_prefixes(prefixes: list[str]) -> list[str]:
         else:
             networks_v6.append(net)
 
-    collapsed_v4 = [str(net) for net in collapse_addresses(networks_v4)] if networks_v4 else []
-    collapsed_v6 = [str(net) for net in collapse_addresses(networks_v6)] if networks_v6 else []
-    return collapsed_v4 + collapsed_v6
+    def drop_supernets(nets):
+        # Sort most-specific first; drop any prefix that is a supernet of an already-kept one.
+        # This prevents a /16 supernet from replacing the specific /22s we actually need.
+        nets = sorted(nets, key=lambda n: n.prefixlen, reverse=True)
+        kept = []
+        for net in nets:
+            if not any(k.subnet_of(net) for k in kept):
+                kept.append(net)
+        return [str(n) for n in kept]
+
+    return drop_supernets(networks_v4) + drop_supernets(networks_v6)
+
+
+def _ensure_direct_ips_covered(
+    resolved_ips: list[str],
+    prefixes: list[str],
+    debug: Optional[list[str]] = None,
+) -> list[str]:
+    """Safety net: guarantee every directly-resolved IP has its BGP prefix in the result.
+
+    If the main discovery logic missed a prefix for a resolved IP (anycast/GeoDNS mismatch,
+    edge case in ASN filtering, etc.), look it up via RIPE and append it.
+    Works for every discovery mode.
+    """
+    prefix_nets: list[tuple[str, object]] = []
+    covered: set[str] = set(prefixes)
+    for p in prefixes:
+        try:
+            prefix_nets.append((p, ip_network(p, strict=False)))
+        except ValueError:
+            pass
+
+    result = list(prefixes)
+    for ip in resolved_ips:
+        try:
+            ip_obj = ip_address(ip)
+        except ValueError:
+            continue
+        if any(ip_obj in net for _, net in prefix_nets):
+            continue
+        # IP is not covered by any known prefix — fetch it from RIPE
+        prefix, _ = _ip_to_prefix_ripestat(ip, debug=debug)
+        if prefix and prefix not in covered:
+            covered.add(prefix)
+            result.append(prefix)
+            try:
+                prefix_nets.append((prefix, ip_network(prefix, strict=False)))
+            except ValueError:
+                pass
+            _dbg(debug, f"safety_net ip={ip} added_prefix={prefix}")
+
+    return result
 
 
 def discover_domain(
@@ -542,8 +634,21 @@ def discover_domain(
         for d in all_domains:
             for ip in _resolve_ips(d, debug=debug):
                 all_ips.setdefault(ip, None)
+        _dbg(debug, f"smart bulk_dns unique_ips={len(all_ips)}")
+
+        # Phase 2b: DoH resolution to catch anycast IPs invisible to local DNS
+        # (e.g. Cloudflare returns different PoP IPs depending on the resolver location)
+        if _bool_env("DISCOVERY_ENABLE_DOH", True):
+            doh_limit = _int_env("DISCOVERY_DOH_MAX_DOMAINS", 10)
+            before_doh = len(all_ips)
+            for d in all_domains[:doh_limit]:
+                for ip in _resolve_ips_doh(d, debug=debug):
+                    all_ips.setdefault(ip, None)
+            if len(all_ips) > before_doh:
+                _dbg(debug, f"smart doh_extra_ips={len(all_ips) - before_doh} total={len(all_ips)}")
+
         ip_set = set(all_ips.keys())
-        _dbg(debug, f"smart bulk_dns unique_ips={len(ip_set)}")
+        _dbg(debug, f"smart total_unique_ips={len(ip_set)}")
 
         if not ip_set:
             return None, list(ip_set), []
@@ -617,6 +722,7 @@ def discover_domain(
 
         _dbg(debug, f"smart expanded_prefixes={len(expanded_prefixes)}")
         optimized = _optimize_prefixes(list(expanded_prefixes))
+        optimized = _ensure_direct_ips_covered(resolved_ips, optimized, debug)
         _dbg(debug, f"smart final_prefixes={len(optimized)}")
         return primary_asn, list(ip_set)[:max_ips], optimized
 
@@ -639,6 +745,7 @@ def discover_domain(
         prefixes, provider = _asn_prefixes(primary_asn, debug=debug)
         _dbg(debug, f"asn_to_prefixes provider={provider} raw_count={len(prefixes)}")
         optimized = _optimize_prefixes(prefixes)
+        optimized = _ensure_direct_ips_covered(resolved_ips, optimized, debug)
         _dbg(debug, f"prefix_optimize result_count={len(optimized)}")
         return primary_asn, ips, optimized
 
@@ -660,6 +767,7 @@ def discover_domain(
                 if asn:
                     primary_asn = asn
                     break
+        prefixes_out = _ensure_direct_ips_covered(resolved_ips, prefixes_out, debug)
         _dbg(debug, f"rdap result asn={primary_asn} prefixes={len(prefixes_out)}")
         return primary_asn, ips, prefixes_out
 
@@ -680,6 +788,7 @@ def discover_domain(
                 if asn:
                     primary_asn_ni = asn
                     break
+        prefixes_out_ni = _ensure_direct_ips_covered(resolved_ips, prefixes_out_ni, debug)
         _dbg(debug, f"network_info result asn={primary_asn_ni} prefixes={len(prefixes_out_ni)}")
         return primary_asn_ni, ips, prefixes_out_ni
 
