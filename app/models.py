@@ -32,6 +32,7 @@ class Site(Base):
 
     next_hop: Mapped[NextHop] = relationship("NextHop", back_populates="sites")
     prefixes: Mapped[list["Prefix"]] = relationship("Prefix", back_populates="site", cascade="all, delete-orphan")
+    jobs: Mapped[list["Job"]] = relationship("Job", back_populates="site")
 
 
 class Prefix(Base):
@@ -67,6 +68,7 @@ class Job(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     finished_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
+    site: Mapped[Site | None] = relationship("Site", back_populates="jobs")
     logs: Mapped[list["JobLog"]] = relationship("JobLog", back_populates="job", cascade="all, delete-orphan")
 
 
