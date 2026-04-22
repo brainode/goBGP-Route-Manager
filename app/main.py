@@ -1072,7 +1072,7 @@ def cancel_job(job_id: int, db: Session = Depends(get_db)):
 
 @app.get("/logs", response_class=HTMLResponse)
 def logs_list(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    jobs = db.query(Job).order_by(Job.id.desc()).limit(100).all()
+    jobs = db.query(Job).options(joinedload(Job.site)).order_by(Job.id.desc()).limit(100).all()
     return templates.TemplateResponse("logs.html", {"request": request, "jobs": jobs, "title": "Logs"})
 
 
