@@ -22,6 +22,7 @@
         </div>
 
         <form method="post" action="/sites">
+          <input type="hidden" name="site_type" id="site-type-input" value="domain" />
           <label id="domain-label">Domain
             <input type="text" name="domain" id="domain-input"
                    placeholder="youtube.com" required autocomplete="off" />
@@ -49,6 +50,7 @@
         <script>
           function setSiteType(type) {
             const isManual = type === 'manual';
+            document.getElementById('site-type-input').value = isManual ? 'manual' : 'discovery';
             const lbl = document.getElementById('domain-label');
             const inp = document.getElementById('domain-input');
             lbl.childNodes[0].textContent = isManual ? 'Name ' : 'Domain';
@@ -101,6 +103,9 @@
         <tr class="site-row" data-target="site-prefixes-{{ site.id }}">
           <td>
             <a href="/sites/{{ site.id }}" style="font-weight:600">{{ site.domain }}</a>
+            <div style="font-size:0.72rem;color:#6b7280;margin-top:0.2rem">
+              {{ site.site_type }}
+            </div>
           </td>
           <td>
             {% if site.asn %}
@@ -108,16 +113,26 @@
             {% else %}<span class="subtle">—</span>{% endif %}
           </td>
           <td>
-            <span style="font-weight:600">{{ active_prefixes | length }}</span>
+            <span style="font-weight:600">{{ site.announced_prefixes_count }}</span>
+            <span class="subtle">/ {{ site.desired_prefixes_count }}</span>
           </td>
           <td><code>{{ site.next_hop.ip }}</code></td>
           <td id="status-cell-{{ site.id }}">
             {% if site.id in active_job_by_site %}
             <span class="label warning"><i class="fa-solid fa-spinner fa-spin"></i> Rediscovering…</span>
-            {% elif site.enabled %}
+            {% elif site.display_status == 'active' %}
             <span class="label success"><i class="fa-solid fa-circle-check"></i> Active</span>
+            {% elif site.display_status == 'partial' %}
+            <span class="label warning"><i class="fa-solid fa-circle-half-stroke"></i> Partial</span>
+            {% elif site.display_status == 'missing' %}
+            <span class="label alert"><i class="fa-solid fa-triangle-exclamation"></i> Missing</span>
             {% else %}
             <span class="label alert"><i class="fa-solid fa-circle-pause"></i> Paused</span>
+            {% endif %}
+            {% if site.status_stale %}
+            <div style="font-size:0.72rem;color:#6b7280;margin-top:0.25rem">stale · {{ site.last_checked_at_display or 'never' }}</div>
+            {% else %}
+            <div style="font-size:0.72rem;color:#6b7280;margin-top:0.25rem">{{ site.last_checked_at_display or 'never' }}</div>
             {% endif %}
           </td>
           <td>
@@ -143,6 +158,18 @@
                 </button>
               </form>
             </div>
+            {% if site.supports_auto_rediscover %}
+            <form method="post" action="/sites/{{ site.id }}/auto-rediscover" style="margin-top:0.45rem">
+              <label style="display:inline-flex;align-items:center;gap:0.35rem;font-size:0.76rem;color:#374151;cursor:pointer">
+                <input type="checkbox" name="enabled" value="on"
+                       {% if site.auto_rediscover_enabled %}checked{% endif %}
+                       onchange="this.form.submit()">
+                Refresh discover
+              </label>
+            </form>
+            {% else %}
+            <div style="margin-top:0.45rem;font-size:0.76rem;color:#9ca3af">manual site</div>
+            {% endif %}
           </td>
         </tr>
         <tr id="site-prefixes-{{ site.id }}" class="site-prefixes-row hidden">

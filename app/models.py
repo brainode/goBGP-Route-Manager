@@ -23,6 +23,8 @@ class Site(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
     domain: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     asn: Mapped[str] = mapped_column(String(32), nullable=True)
+    is_manual: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    auto_rediscover_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     next_hop_id: Mapped[int] = mapped_column(ForeignKey("next_hops.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
@@ -41,6 +43,8 @@ class Prefix(Base):
     cidr: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     source: Mapped[str] = mapped_column(String(32), default="manual", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_announced: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_checked_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     site: Mapped[Site] = relationship("Site", back_populates="prefixes")
