@@ -11,20 +11,50 @@
       </div>
       <div class="card-section">
         <div class="status-row">
-          {% if site.enabled %}
+          {% if site.display_status == 'active' %}
           <span class="label success"><i class="fa-solid fa-circle-check"></i> Active</span>
+          {% elif site.display_status == 'partial' %}
+          <span class="label warning"><i class="fa-solid fa-circle-half-stroke"></i> Partial</span>
+          {% elif site.display_status == 'missing' %}
+          <span class="label alert"><i class="fa-solid fa-triangle-exclamation"></i> Missing</span>
           {% else %}
           <span class="label alert"><i class="fa-solid fa-circle-pause"></i> Paused</span>
           {% endif %}
           {% if site.asn %}
           <span class="label primary"><i class="fa-solid fa-network-wired"></i> {{ site.asn }}</span>
           {% endif %}
+          {% if site.status_stale %}
+          <span class="label secondary"><i class="fa-solid fa-clock"></i> stale</span>
+          {% endif %}
         </div>
+        <p style="margin:0.45rem 0 0.15rem;font-size:0.88rem;color:#374151">
+          <i class="fa-solid fa-satellite-dish" style="color:var(--muted);width:16px"></i>
+          <strong>Announced:</strong> {{ site.announced_prefixes_count }} / {{ site.desired_prefixes_count }}
+          <span class="subtle">desired prefixes in goBGP</span>
+        </p>
+        <p style="margin:0.25rem 0 0.15rem;font-size:0.82rem;color:#6b7280">
+          <i class="fa-solid fa-clock-rotate-left" style="color:var(--muted);width:16px"></i>
+          <strong>Last checked:</strong> {{ site.last_checked_at_display or 'never' }}
+        </p>
+        <p style="margin:0.5rem 0 0.15rem;font-size:0.88rem;color:#374151">
+          <i class="fa-solid fa-shapes" style="color:var(--muted);width:16px"></i>
+          <strong>Type:</strong> {{ site.site_type }}
+        </p>
         <p style="margin:0.5rem 0 0.15rem;font-size:0.88rem;color:#374151">
           <i class="fa-solid fa-right-left" style="color:var(--muted);width:16px"></i>
           <strong>Next hop:</strong> <code>{{ site.next_hop.ip }}</code>
           {% if site.next_hop.name %}<span class="subtle">— {{ site.next_hop.name }}</span>{% endif %}
         </p>
+        {% if site.supports_auto_rediscover %}
+        <form method="post" action="/sites/{{ site.id }}/auto-rediscover" style="margin:0.55rem 0 0">
+          <label style="display:inline-flex;align-items:center;gap:0.4rem;font-size:0.86rem;color:#374151;cursor:pointer">
+            <input type="checkbox" name="enabled" value="on"
+                   {% if site.auto_rediscover_enabled %}checked{% endif %}
+                   onchange="this.form.submit()">
+            Refresh discover every hour
+          </label>
+        </form>
+        {% endif %}
         <div class="action-group" style="margin-top:0.85rem">
           <form method="post" action="/sites/{{ site.id }}/toggle">
             {% if site.enabled %}
@@ -78,7 +108,8 @@
         <tr>
           <th>CIDR</th>
           <th>Source</th>
-          <th>Active</th>
+          <th>Desired</th>
+          <th>Announced</th>
           <th>Action</th>
         </tr>
       </thead>
@@ -99,6 +130,18 @@
             {% else %}
             <span class="label" style="background:#e5e7eb;color:#6b7280">no</span>
             {% endif %}
+          </td>
+          <td>
+            {% if p.is_announced %}
+            <span class="label success">yes</span>
+            {% else %}
+            <span class="label {% if p.is_active %}alert{% else %}secondary{% endif %}">
+              {% if p.is_active %}no{% else %}not desired{% endif %}
+            </span>
+            {% endif %}
+            <div style="font-size:0.72rem;color:#6b7280;margin-top:0.2rem">
+              {{ p.last_checked_at_display or 'never' }}{% if p.announced_stale %} · stale{% endif %}
+            </div>
           </td>
           <td>
             <form method="post" action="/prefixes/{{ p.id }}/delete"

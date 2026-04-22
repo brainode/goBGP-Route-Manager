@@ -1,0 +1,283 @@
+import importlib
+import json
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+
+def load_app(tmp_path, monkeypatch):
+    db_path = Path(tmp_path) / "test.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path.as_posix()}")
+    monkeypatch.setenv("STATUS_REFRESH_INTERVAL_SECONDS", "0")
+    monkeypatch.setenv("STATUS_STALE_AFTER_SECONDS", "3600")
+    monkeypatch.setenv("GOBGP_ENABLED", "false")
+
+    import app.database
+    import app.models
+    import app.main
+
+    importlib.reload(app.database)
+    importlib.reload(app.models)
+    importlib.reload(app.main)
+    return app.main, app.models
+
+
+def test_build_optimized_route_plan_dedups_by_next_hop(tmp_path, monkeypatch):
+    main, models = load_app(tmp_path, monkeypatch)
+
+    hop_a = models.NextHop(id=1, ip="10.10.10.1")
+    hop_b = models.NextHop(id=2, ip="10.10.10.2")
+
+    site_a = models.Site(domain="a.example", enabled=True, next_hop=hop_a, next_hop_id=1, is_manual=False)
+    site_a.prefixes = [
+        models.Prefix(cidr="10.0.0.0/24", is_active=True),
+        models.Prefix(cidr="10.0.1.0/24", is_active=True),
+    ]
+
+    site_b = models.Site(domain="b.example", enabled=True, next_hop=hop_a, next_hop_id=1, is_manual=False)
+    site_b.prefixes = [
+        models.Prefix(cidr="10.0.0.0/24", is_active=True),
+    ]
+
+    site_c = models.Site(domain="c.example", enabled=True, next_hop=hop_b, next_hop_id=2, is_manual=False)
+    site_c.prefixes = [
+        models.Prefix(cidr="10.0.0.0/24", is_active=True),
+    ]
+
+    plan = main.build_optimized_route_plan([site_a, site_b, site_c], ipv6_enabled=True)
+
+    assert plan["raw_prefix_rows"] == 4
+    assert plan["optimized_unique_routes"] == 2
+    assert ("10.0.0.0/23", "10.10.10.1") in plan["routes"]
+    assert ("10.0.0.0/24", "10.10.10.2") in plan["routes"]
+
+
+def test_site_status_metadata_reports_partial_and_paused(tmp_path, monkeypatch):
+    main, models = load_app(tmp_path, monkeypatch)
+
+    hop = models.NextHop(id=1, ip="10.10.10.1")
+    site = models.Site(domain="status.example", enabled=True, next_hop=hop, next_hop_id=1, is_manual=False)
+    site.prefixes = [
+        models.Prefix(cidr="10.0.0.0/24", is_active=True, is_announced=True),
+        models.Prefix(cidr="10.0.1.0/24", is_active=True, is_announced=False),
+    ]
+
+    metadata = main._site_status_metadata(site, ipv6_enabled=True)
+    assert metadata["status"] == "partial"
+    assert metadata["desired_prefixes_count"] == 2
+    assert metadata["announced_prefixes_count"] == 1
+
+    site.enabled = False
+    paused = main._site_status_metadata(site, ipv6_enabled=True)
+    assert paused["status"] == "paused"
+
+
+def test_import_configuration_upserts_and_preserves_existing_prefixes(tmp_path, monkeypatch):
+    main, models = load_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.gobgp, "list_routes", lambda: (True, [], "ok"))
+
+    with TestClient(main.app) as client:
+        payload = {
+            "version": 1,
+            "settings": {
+                "discovery_mode": "smart",
+                "ipv6_enabled": True,
+                "auto_rediscover_all_enabled": True,
+            },
+            "next_hops": [
+                {"ip": "10.10.10.1", "name": "Primary"},
+            ],
+            "sites": [
+                {
+                    "domain": "import.example",
+                    "asn": "AS64500",
+                    "enabled": True,
+                    "site_type": "discovery",
+                    "auto_rediscover_enabled": True,
+                    "next_hop_ip": "10.10.10.1",
+                    "prefixes": [
+                        {"cidr": "10.0.0.0/24", "source": "manual", "is_active": True},
+                    ],
+                }
+            ],
+        }
+
+        response = client.post(
+            "/settings/import",
+            files={"config_file": ("config.json", json.dumps(payload), "application/json")},
+        )
+        assert response.status_code == 200
+
+        db = main.SessionLocal()
+        try:
+            site = db.query(models.Site).filter(models.Site.domain == "import.example").first()
+            assert site is not None
+            assert site.auto_rediscover_enabled is True
+            assert site.is_manual is False
+            assert len(site.prefixes) == 1
+        finally:
+            db.close()
+
+        payload["sites"][0]["asn"] = "AS64501"
+        payload["sites"][0]["prefixes"] = [
+            {"cidr": "10.0.1.0/24", "source": "discovery", "is_active": True},
+        ]
+        response = client.post(
+            "/settings/import",
+            files={"config_file": ("config.json", json.dumps(payload), "application/json")},
+        )
+        assert response.status_code == 200
+
+        db = main.SessionLocal()
+        try:
+            site = db.query(models.Site).options(main.joinedload(models.Site.prefixes)).filter(models.Site.domain == "import.example").first()
+            assert site.asn == "AS64501"
+            assert sorted(prefix.cidr for prefix in site.prefixes) == ["10.0.0.0/24", "10.0.1.0/24"]
+        finally:
+            db.close()
+
+
+def test_export_configuration_returns_expected_shape(tmp_path, monkeypatch):
+    main, models = load_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.gobgp, "list_routes", lambda: (True, [], "ok"))
+
+    with TestClient(main.app) as client:
+        db = main.SessionLocal()
+        try:
+            hop = models.NextHop(ip="10.10.10.1", name="Primary")
+            db.add(hop)
+            db.commit()
+            db.refresh(hop)
+
+            site = models.Site(
+                domain="export.example",
+                asn="AS64500",
+                enabled=True,
+                is_manual=False,
+                auto_rediscover_enabled=True,
+                next_hop_id=hop.id,
+            )
+            db.add(site)
+            db.commit()
+            db.refresh(site)
+            db.add(models.Prefix(site_id=site.id, cidr="10.0.0.0/24", source="discovery", is_active=True, is_announced=True))
+            db.add(models.Job(job_type="rediscover_site", site_id=site.id, status="done"))
+            db.commit()
+            main._set_setting_value(db, "discovery_mode", "smart")
+            main._set_setting_value(db, "ipv6_enabled", "true")
+            main._set_setting_value(db, "auto_rediscover_all_enabled", "true")
+            db.commit()
+        finally:
+            db.close()
+
+        response = client.get("/settings/export")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["version"] == 1
+        assert data["settings"]["auto_rediscover_all_enabled"] is True
+        assert data["sites"][0]["site_type"] == "discovery"
+        assert data["sites"][0]["auto_rediscover_enabled"] is True
+        assert "jobs" not in data
+        assert "job_logs" not in data
+        assert "is_announced" not in json.dumps(data)
+        assert "last_checked_at" not in json.dumps(data)
+
+
+def test_auto_rediscover_toggle_syncs_global_setting(tmp_path, monkeypatch):
+    main, models = load_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.gobgp, "list_routes", lambda: (True, [], "ok"))
+
+    with TestClient(main.app) as client:
+        db = main.SessionLocal()
+        try:
+            hop = models.NextHop(ip="10.10.10.1")
+            db.add(hop)
+            db.commit()
+            db.refresh(hop)
+
+            discovery_a = models.Site(domain="a.example", next_hop_id=hop.id, enabled=True, is_manual=False, auto_rediscover_enabled=False)
+            discovery_b = models.Site(domain="b.example", next_hop_id=hop.id, enabled=True, is_manual=False, auto_rediscover_enabled=False)
+            manual_site = models.Site(domain="manual-routes", next_hop_id=hop.id, enabled=True, is_manual=True, auto_rediscover_enabled=False)
+            db.add_all([discovery_a, discovery_b, manual_site])
+            db.commit()
+            db.refresh(discovery_a)
+        finally:
+            db.close()
+
+        response = client.post("/settings/auto-rediscover-all", data={"enabled": "on"})
+        assert response.status_code == 200
+
+        db = main.SessionLocal()
+        try:
+            sites = {site.domain: site for site in db.query(models.Site).all()}
+            assert sites["a.example"].auto_rediscover_enabled is True
+            assert sites["b.example"].auto_rediscover_enabled is True
+            assert sites["manual-routes"].auto_rediscover_enabled is False
+            assert main._get_auto_rediscover_all_enabled(db) is True
+        finally:
+            db.close()
+
+        response = client.post(
+            f"/sites/{sites['a.example'].id}/auto-rediscover",
+            data={},
+            headers={"referer": "/sites"},
+        )
+        assert response.status_code == 200
+
+        db = main.SessionLocal()
+        try:
+            assert main._get_auto_rediscover_all_enabled(db) is False
+        finally:
+            db.close()
+
+
+def test_auto_rediscover_cycle_processes_only_enabled_discovery_sites(tmp_path, monkeypatch):
+    main, models = load_app(tmp_path, monkeypatch)
+
+    with TestClient(main.app):
+        db = main.SessionLocal()
+        try:
+            hop = models.NextHop(ip="10.10.10.1")
+            db.add(hop)
+            db.commit()
+            db.refresh(hop)
+
+            site_run = models.Site(domain="run.example", next_hop_id=hop.id, enabled=True, is_manual=False, auto_rediscover_enabled=True)
+            site_skip_job = models.Site(domain="skip-job.example", next_hop_id=hop.id, enabled=True, is_manual=False, auto_rediscover_enabled=True)
+            site_manual = models.Site(domain="manual.example", next_hop_id=hop.id, enabled=True, is_manual=True, auto_rediscover_enabled=False)
+            site_disabled = models.Site(domain="off.example", next_hop_id=hop.id, enabled=True, is_manual=False, auto_rediscover_enabled=False)
+            db.add_all([site_run, site_skip_job, site_manual, site_disabled])
+            db.commit()
+            db.refresh(site_run)
+            db.refresh(site_skip_job)
+            db.add(models.Job(job_type="rediscover_site", site_id=site_skip_job.id, status="running"))
+            db.commit()
+            run_id = site_run.id
+            skip_job_id = site_skip_job.id
+        finally:
+            db.close()
+
+        processed = []
+        monkeypatch.setattr(main, "_refresh_gobgp_state", lambda trigger: None)
+        monkeypatch.setattr(main, "_set_maintenance_status", lambda message: None)
+
+        def fake_rediscover(db, site, apply_changes=True, debug=None, cancel_event=None):
+            processed.append(site.id)
+            return {"ok": True, "site_id": site.id, "added": 0, "removed": 0, "discovered": 0, "asn": site.asn}
+
+        monkeypatch.setattr(main, "_rediscover_site_state", fake_rediscover)
+
+        main._run_auto_rediscover_cycle("test")
+
+        assert processed == [run_id]
+
+        db = main.SessionLocal()
+        try:
+            done_job = db.query(models.Job).filter(models.Job.site_id == run_id, models.Job.job_type == "auto_rediscover_site").first()
+            assert done_job is not None
+            assert done_job.status == "done"
+
+            original_running = db.query(models.Job).filter(models.Job.site_id == skip_job_id, models.Job.status == "running").count()
+            assert original_running == 1
+        finally:
+            db.close()
