@@ -1,8 +1,11 @@
 import importlib
 import json
 from pathlib import Path
+from threading import Lock
+import time
 
 from fastapi.testclient import TestClient
+from concurrent.futures import Future
 
 
 def load_app(tmp_path, monkeypatch):
@@ -279,5 +282,125 @@ def test_auto_rediscover_cycle_processes_only_enabled_discovery_sites(tmp_path, 
 
             original_running = db.query(models.Job).filter(models.Job.site_id == skip_job_id, models.Job.status == "running").count()
             assert original_running == 1
+        finally:
+            db.close()
+
+
+def test_rediscover_site_endpoint_queues_job_and_logs_it(tmp_path, monkeypatch):
+    main, models = load_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.gobgp, "list_routes", lambda: (True, [], "ok"))
+
+    def fake_submit(site_id, job_id):
+        future = Future()
+        future.set_result(None)
+        return future
+
+    monkeypatch.setattr(main, "_submit_rediscover_site_job", fake_submit)
+
+    with TestClient(main.app) as client:
+        db = main.SessionLocal()
+        try:
+            hop = models.NextHop(ip="10.10.10.1")
+            db.add(hop)
+            db.commit()
+            db.refresh(hop)
+
+            site = models.Site(domain="queue.example", next_hop_id=hop.id, enabled=True, is_manual=False)
+            db.add(site)
+            db.commit()
+            db.refresh(site)
+            site_id = site.id
+        finally:
+            db.close()
+
+        response = client.post(f"/sites/{site_id}/rediscover")
+        assert response.status_code == 200
+        job_id = response.json()["job_id"]
+
+        db = main.SessionLocal()
+        try:
+            job = db.query(models.Job).filter(models.Job.id == job_id).first()
+            assert job is not None
+            assert job.status == "pending"
+            logs = db.query(models.JobLog).filter(models.JobLog.job_id == job_id).order_by(models.JobLog.id.asc()).all()
+            assert any("[queued] rediscover scheduled source=manual" in log.message for log in logs)
+        finally:
+            db.close()
+
+
+def test_rediscover_all_queues_sites_with_parallel_limit(tmp_path, monkeypatch):
+    main, models = load_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(main.gobgp, "list_routes", lambda: (True, [], "ok"))
+    monkeypatch.setattr(main, "_refresh_gobgp_state", lambda trigger: None)
+    monkeypatch.setattr(main, "_set_maintenance_status", lambda message: None)
+
+    def fake_apply_current_state(db):
+        return {
+            "ok": True,
+            "routes_found": 0,
+            "routes_removed": 0,
+            "sites": 0,
+            "raw_prefix_rows": 0,
+            "optimized_unique_routes": 0,
+            "prefixes_attempted": 0,
+            "prefixes_applied": 0,
+            "prefixes_failed": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr(main, "_apply_current_state", fake_apply_current_state)
+
+    active = 0
+    max_active = 0
+    counter_lock = Lock()
+
+    def fake_rediscover(db, site, apply_changes=True, debug=None, cancel_event=None):
+        nonlocal active, max_active
+        with counter_lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.05)
+        with counter_lock:
+            active -= 1
+        return {"ok": True, "site_id": site.id, "added": 0, "removed": 0, "discovered": 0, "asn": site.asn}
+
+    monkeypatch.setattr(main, "_rediscover_site_state", fake_rediscover)
+
+    with TestClient(main.app):
+        db = main.SessionLocal()
+        try:
+            hop = models.NextHop(ip="10.10.10.1")
+            db.add(hop)
+            db.commit()
+            db.refresh(hop)
+
+            sites = []
+            for idx in range(6):
+                site = models.Site(
+                    domain=f"site-{idx}.example",
+                    next_hop_id=hop.id,
+                    enabled=True,
+                    is_manual=False,
+                )
+                db.add(site)
+                db.commit()
+                db.refresh(site)
+                sites.append(site.id)
+        finally:
+            db.close()
+
+        main._run_rediscover_all_and_apply_job("test")
+
+        db = main.SessionLocal()
+        try:
+            jobs = (
+                db.query(models.Job)
+                .filter(models.Job.site_id.in_(sites), models.Job.job_type == "rediscover_site")
+                .order_by(models.Job.id.asc())
+                .all()
+            )
+            assert len(jobs) == 6
+            assert all(job.status == "done" for job in jobs)
+            assert max_active == 4
         finally:
             db.close()
