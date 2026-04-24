@@ -5,3 +5,4 @@ app/__pycache__/
 error.log
 venv/
 __pycache__/
+*.tar

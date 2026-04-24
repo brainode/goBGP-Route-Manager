@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from ipaddress import collapse_addresses, ip_address, ip_network
 import json
 import logging
@@ -48,11 +49,14 @@ _AUTO_REDISCOVER_ALL_KEY = "auto_rediscover_all_enabled"
 _CONFIGURATION_STATUS_KEY = "configuration_status"
 _STATUS_REFRESH_INTERVAL_SECONDS = max(int(os.getenv("STATUS_REFRESH_INTERVAL_SECONDS", "3600")), 0)
 _STATUS_STALE_AFTER_SECONDS = max(int(os.getenv("STATUS_STALE_AFTER_SECONDS", "5400")), 60)
+_REDISCOVER_QUEUE_PARALLELISM = max(int(os.getenv("REDISCOVER_QUEUE_PARALLELISM", "4")), 1)
 _maintenance_lock = Lock()
 _status_refresh_lock = Lock()
 _status_refresh_stop = Event()
 _status_refresh_thread: Thread | None = None
 _auto_rediscover_lock = Lock()
+_rediscover_executor_lock = Lock()
+_rediscover_executor: ThreadPoolExecutor | None = None
 _cancel_flags: dict[int, Event] = {}
 
 _SITE_STATUS_PAUSED = "paused"
@@ -93,6 +97,17 @@ def _set_maintenance_status(message: str) -> None:
         db.commit()
     finally:
         db.close()
+
+
+def _get_rediscover_executor() -> ThreadPoolExecutor:
+    global _rediscover_executor
+    with _rediscover_executor_lock:
+        if _rediscover_executor is None:
+            _rediscover_executor = ThreadPoolExecutor(
+                max_workers=_REDISCOVER_QUEUE_PARALLELISM,
+                thread_name_prefix="rediscover",
+            )
+        return _rediscover_executor
 
 
 def _timestamp_now() -> str:
@@ -482,6 +497,10 @@ def _run_auto_rediscover_cycle(trigger: str) -> None:
         _auto_rediscover_lock.release()
 
 
+def _submit_rediscover_site_job(site_id: int, job_id: int):
+    return _get_rediscover_executor().submit(_rediscover_site_background, site_id, job_id)
+
+
 def _status_refresh_worker() -> None:
     while not _status_refresh_stop.is_set():
         if _status_refresh_stop.wait(_STATUS_REFRESH_INTERVAL_SECONDS):
@@ -525,6 +544,7 @@ def startup() -> None:
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema()
     _refresh_gobgp_state("startup")
+    _get_rediscover_executor()
     global _status_refresh_thread
     if _STATUS_REFRESH_INTERVAL_SECONDS > 0 and (_status_refresh_thread is None or not _status_refresh_thread.is_alive()):
         _status_refresh_stop.clear()
@@ -535,6 +555,11 @@ def startup() -> None:
 @app.on_event("shutdown")
 def shutdown() -> None:
     _status_refresh_stop.set()
+    global _rediscover_executor
+    with _rediscover_executor_lock:
+        if _rediscover_executor is not None:
+            _rediscover_executor.shutdown(wait=False, cancel_futures=False)
+            _rediscover_executor = None
 
 
 def _is_valid_ip(value: str) -> bool:
@@ -666,6 +691,18 @@ def _rediscover_site_background(site_id: int, job_id: int) -> None:
         _cancel_flags.pop(job_id, None)
         db.close()
     _refresh_gobgp_state(f"rediscover_site:{site_id}")
+
+
+def _queue_rediscover_site(db: Session, site: Site, source: str) -> tuple[Job, Future[object]]:
+    job = Job(job_type="rediscover_site", site_id=site.id, status="pending")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    _cancel_flags[job.id] = Event()
+    debug = LoggingList(job.id, db)
+    debug.append(f"[queued] rediscover scheduled source={source} site_id={site.id} domain={site.domain}")
+    future = _submit_rediscover_site_job(site.id, job.id)
+    return job, future
 
 
 def _rediscover_site_state(
@@ -852,44 +889,74 @@ def _run_rediscover_all_and_apply_job(trigger: str) -> None:
         _set_maintenance_status(f"{_timestamp_now()} Busy: another maintenance task is already running")
         return
 
-    _set_maintenance_status(f"{_timestamp_now()} Running: rediscover all sites and apply current state")
+    _set_maintenance_status(
+        f"{_timestamp_now()} Running: rediscover all sites via queue (parallel {_REDISCOVER_QUEUE_PARALLELISM})"
+    )
     db = SessionLocal()
     try:
         sites = db.query(Site).options(joinedload(Site.next_hop), joinedload(Site.prefixes)).order_by(Site.domain.asc()).all()
-        rediscover_ok = 0
-        rediscover_failed = 0
-        added = 0
-        removed = 0
+        if not sites:
+            _set_maintenance_status(f"{_timestamp_now()} Rediscover all skipped: no sites found")
+            return
+
+        queued = 0
+        skipped = 0
+        futures = []
+        job_ids: list[int] = []
         for site in sites:
-            result = _rediscover_site_state(db, site, apply_changes=False)
-            if result["ok"]:
-                rediscover_ok += 1
-                added += int(result["added"])
-                removed += int(result["removed"])
-            else:
-                rediscover_failed += 1
+            existing = (
+                db.query(Job)
+                .filter(Job.site_id == site.id, Job.status.in_(["pending", "running"]))
+                .first()
+            )
+            if existing:
+                skipped += 1
+                logger.info(
+                    "maintenance rediscover_all skipped site_id=%s domain=%s reason=job_running active_job_id=%s",
+                    site.id,
+                    site.domain,
+                    existing.id,
+                )
+                continue
+
+            job, future = _queue_rediscover_site(db, site, source=f"settings:{trigger}")
+            queued += 1
+            job_ids.append(job.id)
+            futures.append(future)
+
+        _set_maintenance_status(
+            f"{_timestamp_now()} Rediscover queued: {queued} sites at parallel {_REDISCOVER_QUEUE_PARALLELISM}"
+            + (f", skipped {skipped} active jobs" if skipped else "")
+        )
+
+        if futures:
+            wait(futures)
 
         apply_result = _apply_current_state(db)
+        db.expire_all()
+        jobs = db.query(Job).filter(Job.id.in_(job_ids)).all() if job_ids else []
+        rediscover_done = sum(1 for job in jobs if job.status == "done")
+        rediscover_failed = sum(1 for job in jobs if job.status == "failed")
         logger.info(
-            "maintenance rediscover_all trigger=%s rediscover_ok=%s rediscover_failed=%s added=%s removed=%s apply=%s",
+            "maintenance rediscover_all trigger=%s queued=%s done=%s failed=%s skipped=%s apply=%s",
             trigger,
-            rediscover_ok,
+            queued,
+            rediscover_done,
             rediscover_failed,
-            added,
-            removed,
+            skipped,
             apply_result,
         )
         if apply_result["ok"] and rediscover_failed == 0:
             _set_maintenance_status(
-                f"{_timestamp_now()} Rediscover complete: updated {rediscover_ok} sites, added {added}, removed {removed}, "
+                f"{_timestamp_now()} Rediscover complete: updated {rediscover_done} sites, skipped {skipped}, "
                 f"then applied {apply_result['prefixes_applied']} routes "
                 f"(raw {apply_result['raw_prefix_rows']} rows -> {apply_result['optimized_unique_routes']} optimized)"
             )
         else:
             errors = ", ".join(apply_result["errors"][:3]) if apply_result["errors"] else "rediscover/apply partial failure"
             _set_maintenance_status(
-                f"{_timestamp_now()} Rediscover finished with issues: updated {rediscover_ok} sites, failed {rediscover_failed}, "
-                f"added {added}, removed {removed}, applied {apply_result['prefixes_applied']} routes "
+                f"{_timestamp_now()} Rediscover finished with issues: updated {rediscover_done} sites, failed {rediscover_failed}, "
+                f"skipped {skipped}, applied {apply_result['prefixes_applied']} routes "
                 f"(raw {apply_result['raw_prefix_rows']} rows -> {apply_result['optimized_unique_routes']} optimized) ({errors})"
             )
     except Exception:
@@ -1012,7 +1079,9 @@ def rediscover_site(site_id: int, background_tasks: BackgroundTasks, db: Session
     db.commit()
     db.refresh(job)
     _cancel_flags[job.id] = Event()
-    background_tasks.add_task(_rediscover_site_background, site_id, job.id)
+    debug = LoggingList(job.id, db)
+    debug.append(f"[queued] rediscover scheduled source=manual site_id={site.id} domain={site.domain}")
+    _submit_rediscover_site_job(site_id, job.id)
     return JSONResponse({"job_id": job.id, "already_running": False})
 
 
