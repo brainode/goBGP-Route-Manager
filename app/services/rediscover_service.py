@@ -14,7 +14,7 @@ from .. import state as _state
 from ..database import SessionLocal
 from ..discovery import discover_domain
 from ..models import Job, Prefix, Site
-from . import route_service, settings_service
+from . import settings_service, site_service
 from .job_service import LoggingList, create_job, has_active_job
 
 logger = logging.getLogger("uvicorn.error")
@@ -184,16 +184,41 @@ def rediscover_site_state(
             ok, msg = _state.gobgp.add_route(prefix.cidr, site.next_hop.ip)
             debug_lines.append(f"[bgp announce] {prefix.cidr} → {'ok' if ok else 'error'}: {msg}")
 
+    sync_result: dict[str, int | str | bool] = {
+        "ok": True,
+        "site_id": site.id,
+        "attempted": 0,
+        "succeeded": 0,
+        "failed": 0,
+    }
+    if apply_changes and site.enabled:
+        if cancel_event and cancel_event.is_set():
+            debug_lines.append("[cancelled] job cancelled by user — BGP reapply skipped")
+            sync_result["ok"] = False
+        else:
+            debug_lines.append("[bgp reapply] syncing active prefixes from site state")
+            sync_result = site_service.sync_site(db, site)
+            debug_lines.append(
+                "[bgp reapply] attempted={attempted} succeeded={succeeded} failed={failed}".format(
+                    attempted=sync_result["attempted"],
+                    succeeded=sync_result["succeeded"],
+                    failed=sync_result["failed"],
+                )
+            )
+
     debug_lines.append(f"[done] added={added} removed={len(to_remove)} total_prefixes={len(target)}")
     logger.info(
         "rediscover done site_id=%s domain=%s asn=%s prefixes_total=%s added=%s removed=%s apply_changes=%s",
         site.id, site.domain, asn, len(target), added, len(to_remove), apply_changes,
     )
     return {
-        "ok": True,
+        "ok": bool(sync_result["ok"]),
         "site_id": site.id,
         "added": added,
         "removed": len(to_remove),
         "discovered": len(target),
         "asn": asn,
+        "sync_attempted": sync_result["attempted"],
+        "sync_succeeded": sync_result["succeeded"],
+        "sync_failed": sync_result["failed"],
     }

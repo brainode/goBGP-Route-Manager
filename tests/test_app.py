@@ -361,6 +361,100 @@ def test_rediscover_site_endpoint_queues_job_and_logs_it(tmp_path, monkeypatch):
             db.close()
 
 
+def test_rediscover_site_state_reapplies_active_prefixes(tmp_path, monkeypatch):
+    main, models = load_app(tmp_path, monkeypatch)
+
+    import app.services.rediscover_service as _svc_rediscover
+
+    add_calls = []
+    del_calls = []
+
+    monkeypatch.setattr(main.gobgp, "add_route", lambda cidr, next_hop: (add_calls.append((cidr, next_hop)) or True, "ok"))
+    monkeypatch.setattr(main.gobgp, "del_route", lambda cidr, next_hop: (del_calls.append((cidr, next_hop)) or True, "ok"))
+    monkeypatch.setattr(
+        _svc_rediscover,
+        "discover_domain",
+        lambda domain, debug=None, mode=None: ("AS64500", ["203.0.113.10"], ["10.0.0.0/24", "10.0.1.0/24"]),
+    )
+
+    db = main.SessionLocal()
+    try:
+        hop = models.NextHop(ip="10.10.10.1")
+        db.add(hop)
+        db.commit()
+        db.refresh(hop)
+
+        site = models.Site(domain="reapply.example", next_hop_id=hop.id, enabled=True, is_manual=False)
+        db.add(site)
+        db.commit()
+        db.refresh(site)
+        db.add(models.Prefix(site_id=site.id, cidr="10.0.0.0/24", source="discovery", is_active=True))
+        db.commit()
+
+        debug = []
+        result = _svc_rediscover.rediscover_site_state(db, site, apply_changes=True, debug=debug)
+    finally:
+        db.close()
+
+    assert result["ok"] is True
+    assert result["removed"] == 0
+    assert result["added"] == 1
+    assert result["sync_attempted"] == 2
+    assert result["sync_succeeded"] == 2
+    assert result["sync_failed"] == 0
+    assert del_calls == []
+    assert add_calls.count(("10.0.0.0/24", "10.10.10.1")) == 1
+    assert add_calls.count(("10.0.1.0/24", "10.10.10.1")) == 2
+    assert any(line.startswith("[bgp reapply] syncing active prefixes") for line in debug)
+    assert any("attempted=2 succeeded=2 failed=0" in line for line in debug)
+
+
+def test_rediscover_site_state_skips_bgp_changes_when_site_disabled(tmp_path, monkeypatch):
+    main, models = load_app(tmp_path, monkeypatch)
+
+    import app.services.rediscover_service as _svc_rediscover
+
+    add_calls = []
+    del_calls = []
+
+    monkeypatch.setattr(main.gobgp, "add_route", lambda cidr, next_hop: (add_calls.append((cidr, next_hop)) or True, "ok"))
+    monkeypatch.setattr(main.gobgp, "del_route", lambda cidr, next_hop: (del_calls.append((cidr, next_hop)) or True, "ok"))
+    monkeypatch.setattr(
+        _svc_rediscover,
+        "discover_domain",
+        lambda domain, debug=None, mode=None: ("AS64500", ["203.0.113.10"], ["10.0.0.0/24", "10.0.1.0/24"]),
+    )
+
+    db = main.SessionLocal()
+    try:
+        hop = models.NextHop(ip="10.10.10.1")
+        db.add(hop)
+        db.commit()
+        db.refresh(hop)
+
+        site = models.Site(domain="disabled.example", next_hop_id=hop.id, enabled=False, is_manual=False)
+        db.add(site)
+        db.commit()
+        db.refresh(site)
+        db.add(models.Prefix(site_id=site.id, cidr="10.0.0.0/24", source="discovery", is_active=True))
+        db.commit()
+
+        debug = []
+        result = _svc_rediscover.rediscover_site_state(db, site, apply_changes=True, debug=debug)
+    finally:
+        db.close()
+
+    assert result["ok"] is True
+    assert result["removed"] == 0
+    assert result["added"] == 1
+    assert result["sync_attempted"] == 0
+    assert result["sync_succeeded"] == 0
+    assert result["sync_failed"] == 0
+    assert add_calls == []
+    assert del_calls == []
+    assert any(line.startswith("[done] added=1 removed=0 total_prefixes=2") for line in debug)
+
+
 def test_rediscover_all_queues_sites_with_parallel_limit(tmp_path, monkeypatch):
     main, models = load_app(tmp_path, monkeypatch)
     monkeypatch.setattr(main.gobgp, "list_routes", lambda: (True, [], "ok"))
