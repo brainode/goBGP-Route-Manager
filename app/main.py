@@ -412,11 +412,15 @@ def _refresh_gobgp_state(trigger: str) -> None:
             return
 
         route_set = {_normalize_cidr(route) for route in routes}
+        route_nets = [ip_network(r, strict=False) for r in route_set]
         checked_at = _utcnow_naive()
         prefixes = db.query(Prefix).all()
         for prefix in prefixes:
-            normalized = _normalize_cidr(prefix.cidr)
-            prefix.is_announced = normalized in route_set
+            net = ip_network(_normalize_cidr(prefix.cidr), strict=False)
+            prefix.is_announced = any(
+                net == rn or (net.version == rn.version and net.subnet_of(rn))
+                for rn in route_nets
+            )
             prefix.last_checked_at = checked_at
         db.commit()
         logger.info("status refresh done trigger=%s routes=%s prefixes=%s", trigger, len(route_set), len(prefixes))
@@ -806,7 +810,7 @@ def _rediscover_site_state(
     }
 
 
-def _apply_current_state(db: Session) -> dict[str, int | bool | list[str]]:
+def _apply_current_state(db: Session, debug: list | None = None) -> dict[str, int | bool | list[str]]:
     purge_result = gobgp.purge_routes()
     enabled_sites = (
         db.query(Site)
@@ -822,19 +826,34 @@ def _apply_current_state(db: Session) -> dict[str, int | bool | list[str]]:
     succeeded = 0
     failed = 0
     errors = list(purge_result.get("errors", []))
+
+    if debug is not None:
+        debug.append(
+            f"[plan] {len(enabled_sites)} enabled sites, "
+            f"{route_plan['raw_prefix_rows']} raw prefix rows → "
+            f"{route_plan['optimized_unique_routes']} optimized routes"
+        )
+
     for cidr, next_hop in route_plan["routes"]:
         attempted += 1
         ok, message = gobgp.add_route(cidr, next_hop)
         if ok:
             succeeded += 1
             logger.info("route add ok apply_current cidr=%s next_hop=%s message=%s", cidr, next_hop, message)
+            if debug is not None:
+                debug.append(f"[ok] {cidr} via {next_hop}")
         else:
             failed += 1
             errors.append(f"{cidr} via {next_hop}: {message}")
             logger.error("route add error apply_current cidr=%s next_hop=%s message=%s", cidr, next_hop, message)
+            if debug is not None:
+                debug.append(f"[error] {cidr} via {next_hop}: {message}")
 
     if failed > 0:
         errors.append(f"apply_failed prefixes={failed}")
+
+    if debug is not None:
+        debug.append(f"[summary] applied {succeeded}/{attempted}, failed {failed}")
 
     return {
         "ok": bool(purge_result.get("ok", False)) and failed == 0,
@@ -850,16 +869,39 @@ def _apply_current_state(db: Session) -> dict[str, int | bool | list[str]]:
     }
 
 
-def _run_apply_current_state_job(trigger: str) -> None:
+def _fail_job(job_id: int, reason: str) -> None:
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job:
+            job.status = "failed"
+            job.finished_at = _utcnow_naive()
+            db.add(JobLog(job_id=job_id, message=f"[failed] {reason}"))
+            db.commit()
+    except Exception:
+        logger.exception("_fail_job error job_id=%s", job_id)
+    finally:
+        db.close()
+
+
+def _run_apply_current_state_job(trigger: str, job_id: int | None = None) -> None:
     if not _maintenance_lock.acquire(blocking=False):
         logger.warning("maintenance skipped trigger=%s reason=busy", trigger)
         _set_maintenance_status(f"{_timestamp_now()} Busy: another maintenance task is already running")
+        if job_id is not None:
+            _fail_job(job_id, "skipped: another maintenance task is already running")
         return
 
     _set_maintenance_status(f"{_timestamp_now()} Running: apply current state")
     db = SessionLocal()
     try:
-        result = _apply_current_state(db)
+        if job_id is not None:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job:
+                job.status = "running"
+                db.commit()
+        debug: list | None = LoggingList(job_id, db) if job_id is not None else None
+        result = _apply_current_state(db, debug)
         logger.info("maintenance apply_current trigger=%s result=%s", trigger, result)
         if result["ok"]:
             _set_maintenance_status(
@@ -874,9 +916,17 @@ def _run_apply_current_state_job(trigger: str) -> None:
                 f"raw {result['raw_prefix_rows']} rows -> {result['optimized_unique_routes']} optimized routes, "
                 f"applied {result['prefixes_applied']} routes, failed {result['prefixes_failed']} ({errors})"
             )
+        if job_id is not None:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job:
+                job.status = "done" if result["ok"] else "failed"
+                job.finished_at = _utcnow_naive()
+                db.commit()
     except Exception:
         logger.exception("maintenance apply_current failed trigger=%s", trigger)
         _set_maintenance_status(f"{_timestamp_now()} Apply failed: see container logs for details")
+        if job_id is not None:
+            _fail_job(job_id, "apply_current_state raised an exception")
     finally:
         db.close()
         _maintenance_lock.release()
@@ -1314,6 +1364,13 @@ def settings_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
         .scalar()
         or 0
     )
+    announced_prefixes_count = (
+        db.query(func.count(Prefix.id))
+        .join(Site, Prefix.site_id == Site.id)
+        .filter(Prefix.is_announced == True, Site.enabled == True)  # noqa: E712
+        .scalar()
+        or 0
+    )
     return templates.TemplateResponse(
         "settings.html",
         {
@@ -1326,6 +1383,7 @@ def settings_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
             "next_hops_count": next_hops_count,
             "enabled_sites_count": enabled_sites_count,
             "active_prefixes_count": active_prefixes_count,
+            "announced_prefixes_count": announced_prefixes_count,
             "maintenance_status": _get_setting_value(db, _MAINTENANCE_STATUS_KEY),
             "ipv6_enabled": _get_ipv6_enabled(db),
             "auto_rediscover_all_enabled": _get_auto_rediscover_all_enabled(db),
@@ -1413,9 +1471,13 @@ def purge_inactive(db: Session = Depends(get_db)):
 
 
 @app.post("/settings/apply-current")
-def apply_current_state(background_tasks: BackgroundTasks):
-    background_tasks.add_task(_run_apply_current_state_job, "settings")
-    return RedirectResponse(url="/settings", status_code=303)
+def apply_current_state(background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    job = Job(job_type="apply_current_state", status="pending")
+    db.add(job)
+    db.commit()
+    db.refresh(job)
+    background_tasks.add_task(_run_apply_current_state_job, "settings", job.id)
+    return RedirectResponse(url=f"/logs/{job.id}", status_code=303)
 
 
 @app.post("/settings/rediscover-all")
