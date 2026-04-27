@@ -17,10 +17,36 @@ def load_app(tmp_path, monkeypatch):
 
     import app.database
     import app.models
+    import app.config
+    import app.state
+    import app.services.job_service
+    import app.services.settings_service
+    import app.services.route_service
+    import app.services.site_service
+    import app.services.rediscover_service
+    import app.services.status_service
+    import app.routers.health
+    import app.routers.sites
+    import app.routers.next_hops
+    import app.routers.settings
+    import app.routers.logs
     import app.main
 
     importlib.reload(app.database)
     importlib.reload(app.models)
+    importlib.reload(app.config)
+    importlib.reload(app.state)
+    importlib.reload(app.services.job_service)
+    importlib.reload(app.services.settings_service)
+    importlib.reload(app.services.route_service)
+    importlib.reload(app.services.site_service)
+    importlib.reload(app.services.rediscover_service)
+    importlib.reload(app.services.status_service)
+    importlib.reload(app.routers.health)
+    importlib.reload(app.routers.sites)
+    importlib.reload(app.routers.next_hops)
+    importlib.reload(app.routers.settings)
+    importlib.reload(app.routers.logs)
     importlib.reload(app.main)
     return app.main, app.models
 
@@ -133,7 +159,8 @@ def test_import_configuration_upserts_and_preserves_existing_prefixes(tmp_path, 
 
         db = main.SessionLocal()
         try:
-            site = db.query(models.Site).options(main.joinedload(models.Site.prefixes)).filter(models.Site.domain == "import.example").first()
+            from sqlalchemy.orm import joinedload
+            site = db.query(models.Site).options(joinedload(models.Site.prefixes)).filter(models.Site.domain == "import.example").first()
             assert site.asn == "AS64501"
             assert sorted(prefix.cidr for prefix in site.prefixes) == ["10.0.0.0/24", "10.0.1.0/24"]
         finally:
@@ -237,6 +264,10 @@ def test_auto_rediscover_toggle_syncs_global_setting(tmp_path, monkeypatch):
 def test_auto_rediscover_cycle_processes_only_enabled_discovery_sites(tmp_path, monkeypatch):
     main, models = load_app(tmp_path, monkeypatch)
 
+    import app.services.status_service as _svc_status
+    import app.services.settings_service as _svc_settings
+    import app.services.rediscover_service as _svc_rediscover
+
     with TestClient(main.app):
         db = main.SessionLocal()
         try:
@@ -261,16 +292,16 @@ def test_auto_rediscover_cycle_processes_only_enabled_discovery_sites(tmp_path, 
             db.close()
 
         processed = []
-        monkeypatch.setattr(main, "_refresh_gobgp_state", lambda trigger: None)
-        monkeypatch.setattr(main, "_set_maintenance_status", lambda message: None)
+        monkeypatch.setattr(_svc_status, "refresh_gobgp_state", lambda trigger: None)
+        monkeypatch.setattr(_svc_settings, "set_maintenance_status", lambda message: None)
 
         def fake_rediscover(db, site, apply_changes=True, debug=None, cancel_event=None):
             processed.append(site.id)
             return {"ok": True, "site_id": site.id, "added": 0, "removed": 0, "discovered": 0, "asn": site.asn}
 
-        monkeypatch.setattr(main, "_rediscover_site_state", fake_rediscover)
+        monkeypatch.setattr(_svc_rediscover, "rediscover_site_state", fake_rediscover)
 
-        main._run_auto_rediscover_cycle("test")
+        _svc_status.run_auto_rediscover_cycle("test")
 
         assert processed == [run_id]
 
@@ -290,12 +321,14 @@ def test_rediscover_site_endpoint_queues_job_and_logs_it(tmp_path, monkeypatch):
     main, models = load_app(tmp_path, monkeypatch)
     monkeypatch.setattr(main.gobgp, "list_routes", lambda: (True, [], "ok"))
 
+    import app.services.rediscover_service as _svc_rediscover
+
     def fake_submit(site_id, job_id):
         future = Future()
         future.set_result(None)
         return future
 
-    monkeypatch.setattr(main, "_submit_rediscover_site_job", fake_submit)
+    monkeypatch.setattr(_svc_rediscover, "submit_rediscover_site_job", fake_submit)
 
     with TestClient(main.app) as client:
         db = main.SessionLocal()
@@ -331,10 +364,16 @@ def test_rediscover_site_endpoint_queues_job_and_logs_it(tmp_path, monkeypatch):
 def test_rediscover_all_queues_sites_with_parallel_limit(tmp_path, monkeypatch):
     main, models = load_app(tmp_path, monkeypatch)
     monkeypatch.setattr(main.gobgp, "list_routes", lambda: (True, [], "ok"))
-    monkeypatch.setattr(main, "_refresh_gobgp_state", lambda trigger: None)
-    monkeypatch.setattr(main, "_set_maintenance_status", lambda message: None)
 
-    def fake_apply_current_state(db):
+    import app.services.status_service as _svc_status
+    import app.services.settings_service as _svc_settings
+    import app.services.route_service as _svc_route
+    import app.services.rediscover_service as _svc_rediscover
+
+    monkeypatch.setattr(_svc_status, "refresh_gobgp_state", lambda trigger: None)
+    monkeypatch.setattr(_svc_settings, "set_maintenance_status", lambda message: None)
+
+    def fake_apply_current_state(db, debug=None):
         return {
             "ok": True,
             "routes_found": 0,
@@ -348,7 +387,7 @@ def test_rediscover_all_queues_sites_with_parallel_limit(tmp_path, monkeypatch):
             "errors": [],
         }
 
-    monkeypatch.setattr(main, "_apply_current_state", fake_apply_current_state)
+    monkeypatch.setattr(_svc_route, "apply_current_state", fake_apply_current_state)
 
     active = 0
     max_active = 0
@@ -359,12 +398,12 @@ def test_rediscover_all_queues_sites_with_parallel_limit(tmp_path, monkeypatch):
         with counter_lock:
             active += 1
             max_active = max(max_active, active)
-        time.sleep(0.05)
+        time.sleep(0.3)
         with counter_lock:
             active -= 1
         return {"ok": True, "site_id": site.id, "added": 0, "removed": 0, "discovered": 0, "asn": site.asn}
 
-    monkeypatch.setattr(main, "_rediscover_site_state", fake_rediscover)
+    monkeypatch.setattr(_svc_rediscover, "rediscover_site_state", fake_rediscover)
 
     with TestClient(main.app):
         db = main.SessionLocal()
@@ -389,7 +428,7 @@ def test_rediscover_all_queues_sites_with_parallel_limit(tmp_path, monkeypatch):
         finally:
             db.close()
 
-        main._run_rediscover_all_and_apply_job("test")
+        _svc_status.run_rediscover_all_and_apply_job("test")
 
         db = main.SessionLocal()
         try:
