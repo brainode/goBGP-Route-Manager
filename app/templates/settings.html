@@ -41,6 +41,25 @@
             When off, IPv6 prefixes are filtered out during discovery and skipped during BGP sync.
           </p>
         </form>
+        <hr style="margin:0.85rem 0">
+        <form method="post" action="/settings/auto-rediscover-all">
+          <div style="display:flex;align-items:center;gap:0.75rem">
+            <div class="switch" style="margin:0">
+              <input class="switch-input" id="autoRediscoverToggle" type="checkbox" name="enabled" value="on"
+                     {% if auto_rediscover_all_enabled %}checked{% endif %}
+                     onchange="this.form.submit()">
+              <label class="switch-paddle" for="autoRediscoverToggle">
+                <span class="show-for-sr">Enable auto rediscover for all discovery sites</span>
+              </label>
+            </div>
+            <label for="autoRediscoverToggle" style="margin:0;cursor:pointer">
+              <i class="fa-solid fa-rotate"></i> Auto rediscover all discovery sites
+            </label>
+          </div>
+          <p style="margin:0.4rem 0 0;font-size:0.82rem;color:#6b7280">
+            Runs once per hour for discovery sites only. Currently enabled on {{ auto_rediscover_sites_count }} site(s).
+          </p>
+        </form>
         <div class="callout secondary" style="margin-top:0.85rem;margin-bottom:0;font-size:0.83rem">
           <p style="margin:0 0 0.4rem"><i class="fa-solid fa-star" style="color:#f59e0b"></i> <strong>RIPE Stat network-info</strong> — exact BGP prefix for each IP. Best for most domains.</p>
           <p style="margin:0 0 0.4rem"><i class="fa-solid fa-book" style="color:#3b82f6"></i> <strong>RDAP netblock</strong> — allocation block from regional registries (ARIN, RIPE, APNIC…).</p>
@@ -77,6 +96,10 @@
           <div class="stat-block">
             <div class="stat-number">{{ active_prefixes_count }}</div>
             <div class="stat-label"><i class="fa-solid fa-route"></i> Active Prefixes</div>
+          </div>
+          <div class="stat-block">
+            <div class="stat-number">{{ announced_prefixes_count }}</div>
+            <div class="stat-label"><i class="fa-solid fa-tower-broadcast"></i> Announced</div>
           </div>
         </div>
       </div>
@@ -135,6 +158,35 @@
             <i class="fa-solid fa-trash-can"></i> Purge inactive prefixes
           </button>
         </form>
+      </div>
+    </div>
+  </div>
+
+  <div class="cell large-6">
+    <div class="card">
+      <div class="card-divider">
+        <i class="fa-solid fa-file-export"></i> Configuration
+      </div>
+      <div class="card-section">
+        {% if configuration_status %}
+        <div class="callout secondary" style="margin-bottom:0.85rem">
+          <strong>Last config operation:</strong> {{ configuration_status }}
+        </div>
+        {% endif %}
+        <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
+          <a class="button primary hollow" href="/settings/export">
+            <i class="fa-solid fa-download"></i> Export JSON
+          </a>
+          <form method="post" action="/settings/import" enctype="multipart/form-data" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+            <input type="file" name="config_file" accept="application/json,.json" required>
+            <button class="button success" type="submit">
+              <i class="fa-solid fa-upload"></i> Import JSON
+            </button>
+          </form>
+        </div>
+        <p style="margin:0.85rem 0 0;color:#6b7280;font-size:0.83rem">
+          Import works as upsert: existing next-hops, sites and prefixes are updated, missing ones are created, and records absent from the file are left untouched.
+        </p>
       </div>
     </div>
   </div>

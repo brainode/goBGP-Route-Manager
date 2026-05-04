@@ -29,7 +29,7 @@
           <td><code>{{ job.job_type }}</code></td>
           <td>
             {% if job.site_id %}
-            <a href="/sites/{{ job.site_id }}">site #{{ job.site_id }}</a>
+            <a href="/sites/{{ job.site_id }}">{{ job.site.domain if job.site else ('site #' ~ job.site_id) }}</a>
             {% else %}—{% endif %}
           </td>
           <td>
