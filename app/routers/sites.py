@@ -274,6 +274,19 @@ def bulk_change_next_hop(
     return RedirectResponse(url="/sites", status_code=303)
 
 
+@router.post("/sites/bulk-reapply-missing")
+def bulk_reapply_missing(
+    background_tasks: BackgroundTasks,
+    site_ids: list[int] = Form(...),
+    db: Session = Depends(get_db),
+):
+    if not site_ids:
+        raise HTTPException(status_code=400, detail="no sites selected")
+    job = create_job(db, "bulk_reapply_missing")
+    background_tasks.add_task(site_service.bulk_reapply_missing_prefixes, site_ids, job.id)
+    return RedirectResponse(url=f"/logs/{job.id}", status_code=303)
+
+
 @router.post("/sites/bulk-add-tags")
 def bulk_add_tags(
     site_ids: list[int] = Form(...),
