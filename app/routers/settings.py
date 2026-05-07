@@ -11,7 +11,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from ..config import MAINTENANCE_STATUS_KEY, CONFIGURATION_STATUS_KEY
+from ..config import (
+    CONFIGURATION_STATUS_KEY,
+    MAINTENANCE_STATUS_KEY,
+    THEME_DARK_END_KEY,
+    THEME_DARK_START_KEY,
+    THEME_SCHEDULE_ENABLED_KEY,
+)
 from ..database import get_db
 from ..discovery import DISCOVERY_MODES
 from ..models import Job, NextHop, Prefix, Site
@@ -56,26 +62,25 @@ def settings_page(request: Request, db: Session = Depends(get_db)) -> HTMLRespon
         .scalar()
         or 0
     )
-    return templates.TemplateResponse(
-        "settings.html",
-        {
-            "request": request,
-            "title": "Settings",
-            "discovery_mode": get_discovery_mode(db),
-            "discovery_modes": DISCOVERY_MODES,
-            "sites_count": sites_count,
-            "prefixes_count": prefixes_count,
-            "next_hops_count": next_hops_count,
-            "enabled_sites_count": enabled_sites_count,
-            "active_prefixes_count": active_prefixes_count,
-            "announced_prefixes_count": announced_prefixes_count,
-            "maintenance_status": get_setting_value(db, MAINTENANCE_STATUS_KEY),
-            "ipv6_enabled": get_ipv6_enabled(db),
-            "auto_rediscover_all_enabled": get_auto_rediscover_all_enabled(db),
-            "auto_rediscover_sites_count": auto_rediscover_sites_count,
-            "configuration_status": get_setting_value(db, CONFIGURATION_STATUS_KEY),
-        },
-    )
+    context = {
+        "request": request,
+        "title": "Settings",
+        "discovery_mode": get_discovery_mode(db),
+        "discovery_modes": DISCOVERY_MODES,
+        "sites_count": sites_count,
+        "prefixes_count": prefixes_count,
+        "next_hops_count": next_hops_count,
+        "enabled_sites_count": enabled_sites_count,
+        "active_prefixes_count": active_prefixes_count,
+        "announced_prefixes_count": announced_prefixes_count,
+        "maintenance_status": get_setting_value(db, MAINTENANCE_STATUS_KEY),
+        "ipv6_enabled": get_ipv6_enabled(db),
+        "auto_rediscover_all_enabled": get_auto_rediscover_all_enabled(db),
+        "auto_rediscover_sites_count": auto_rediscover_sites_count,
+        "configuration_status": get_setting_value(db, CONFIGURATION_STATUS_KEY),
+    }
+    context.update(settings_service.theme_context(db))
+    return templates.TemplateResponse("settings.html", context)
 
 
 @router.post("/discovery-mode")
@@ -102,6 +107,24 @@ def set_auto_rediscover_all(enabled: Optional[str] = Form(None), db: Session = D
     for site in discovery_sites:
         site.auto_rediscover_enabled = new_value
     set_setting_value(db, "auto_rediscover_all_enabled", "true" if new_value and discovery_sites else "false")
+    db.commit()
+    return RedirectResponse(url="/settings", status_code=303)
+
+
+@router.post("/theme-schedule")
+def set_theme_schedule(
+    enabled: Optional[str] = Form(None),
+    dark_start: str = Form("22:00"),
+    dark_end: str = Form("07:00"),
+    db: Session = Depends(get_db),
+):
+    start = settings_service.normalize_theme_time(dark_start)
+    end = settings_service.normalize_theme_time(dark_end)
+    if not start or not end:
+        raise HTTPException(status_code=400, detail="invalid theme schedule time")
+    set_setting_value(db, THEME_SCHEDULE_ENABLED_KEY, "true" if enabled == "on" else "false")
+    set_setting_value(db, THEME_DARK_START_KEY, start)
+    set_setting_value(db, THEME_DARK_END_KEY, end)
     db.commit()
     return RedirectResponse(url="/settings", status_code=303)
 

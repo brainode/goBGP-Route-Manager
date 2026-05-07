@@ -1,196 +1,238 @@
 <!-- SPDX-License-Identifier: GPL-2.0-only -->
 {% extends "base.html" %}
 {% block content %}
-<div class="grid-x grid-margin-x">
 
-  {# ── Discovery mode ───────────────────────────────────────── #}
-  <div class="cell large-6">
-    <div class="card">
-      <div class="card-divider">
-        <i class="fa-solid fa-magnifying-glass-location"></i> Discovery Mode
-      </div>
-      <div class="card-section">
-        <form method="post" action="/settings/discovery-mode">
-          <label>How prefixes are discovered when adding or re-discovering sites
-            <select name="mode">
-              {% for key, label in discovery_modes %}
-              <option value="{{ key }}" {% if key == discovery_mode %}selected{% endif %}>{{ label }}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <button class="button primary" type="submit">
-            <i class="fa-solid fa-floppy-disk"></i> Save
-          </button>
-        </form>
-        <hr style="margin:0.85rem 0">
-        <form method="post" action="/settings/ipv6-enabled">
-          <div style="display:flex;align-items:center;gap:0.75rem">
-            <div class="switch" style="margin:0">
-              <input class="switch-input" id="ipv6Toggle" type="checkbox" name="enabled" value="on"
-                     {% if ipv6_enabled %}checked{% endif %}
-                     onchange="this.form.submit()">
-              <label class="switch-paddle" for="ipv6Toggle">
-                <span class="show-for-sr">Enable IPv6 prefixes</span>
-              </label>
-            </div>
-            <label for="ipv6Toggle" style="margin:0;cursor:pointer">
-              <i class="fa-solid fa-6"></i> Announce IPv6 prefixes
-            </label>
-          </div>
-          <p style="margin:0.4rem 0 0;font-size:0.82rem;color:#6b7280">
-            When off, IPv6 prefixes are filtered out during discovery and skipped during BGP sync.
-          </p>
-        </form>
-        <hr style="margin:0.85rem 0">
-        <form method="post" action="/settings/auto-rediscover-all">
-          <div style="display:flex;align-items:center;gap:0.75rem">
-            <div class="switch" style="margin:0">
-              <input class="switch-input" id="autoRediscoverToggle" type="checkbox" name="enabled" value="on"
-                     {% if auto_rediscover_all_enabled %}checked{% endif %}
-                     onchange="this.form.submit()">
-              <label class="switch-paddle" for="autoRediscoverToggle">
-                <span class="show-for-sr">Enable auto rediscover for all discovery sites</span>
-              </label>
-            </div>
-            <label for="autoRediscoverToggle" style="margin:0;cursor:pointer">
-              <i class="fa-solid fa-rotate"></i> Auto rediscover all discovery sites
-            </label>
-          </div>
-          <p style="margin:0.4rem 0 0;font-size:0.82rem;color:#6b7280">
-            Runs once per hour for discovery sites only. Currently enabled on {{ auto_rediscover_sites_count }} site(s).
-          </p>
-        </form>
-        <div class="callout secondary" style="margin-top:0.85rem;margin-bottom:0;font-size:0.83rem">
-          <p style="margin:0 0 0.4rem"><i class="fa-solid fa-star" style="color:#f59e0b"></i> <strong>RIPE Stat network-info</strong> — exact BGP prefix for each IP. Best for most domains.</p>
-          <p style="margin:0 0 0.4rem"><i class="fa-solid fa-book" style="color:#3b82f6"></i> <strong>RDAP netblock</strong> — allocation block from regional registries (ARIN, RIPE, APNIC…).</p>
-          <p style="margin:0"><i class="fa-solid fa-triangle-exclamation" style="color:#ef4444"></i> <strong>ASN all prefixes</strong> — every prefix in the ASN. May return thousands of routes for CDNs.</p>
-        </div>
-      </div>
-    </div>
+<!-- Page Header -->
+<div class="v2-page-header">
+  <div>
+    <h1>Settings</h1>
+    <p>Discovery, sync, maintenance and configuration</p>
   </div>
-
-  {# ── Stats ────────────────────────────────────────────────── #}
-  <div class="cell large-6">
-    <div class="card">
-      <div class="card-divider">
-        <i class="fa-solid fa-chart-bar"></i> Database Stats
-      </div>
-      <div class="card-section">
-        <div style="display:flex;gap:2rem;flex-wrap:wrap;padding:0.5rem 0">
-          <div class="stat-block">
-            <div class="stat-number">{{ sites_count }}</div>
-            <div class="stat-label"><i class="fa-solid fa-layer-group"></i> Sites</div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-number">{{ prefixes_count }}</div>
-            <div class="stat-label"><i class="fa-solid fa-list"></i> Prefixes</div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-number">{{ next_hops_count }}</div>
-            <div class="stat-label"><i class="fa-solid fa-right-left"></i> Next Hops</div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-number">{{ enabled_sites_count }}</div>
-            <div class="stat-label"><i class="fa-solid fa-bullhorn"></i> Enabled Sites</div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-number">{{ active_prefixes_count }}</div>
-            <div class="stat-label"><i class="fa-solid fa-route"></i> Active Prefixes</div>
-          </div>
-          <div class="stat-block">
-            <div class="stat-number">{{ announced_prefixes_count }}</div>
-            <div class="stat-label"><i class="fa-solid fa-tower-broadcast"></i> Announced</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="cell large-12">
-    <div class="card">
-      <div class="card-divider">
-        <i class="fa-solid fa-arrows-rotate"></i> GoBGP Sync
-      </div>
-      <div class="card-section">
-        <p style="margin-bottom:0.6rem;color:#6b7280;font-size:0.88rem">
-          Use these actions after a VPS reboot, a goBGP restart, or when you want to rebuild the server state from the UI.
-        </p>
-        {% if maintenance_status %}
-        <div class="callout secondary" style="margin-bottom:0.85rem">
-          <strong>Last operation:</strong> {{ maintenance_status }}
-        </div>
-        {% endif %}
-        <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
-          <form method="post" action="/settings/apply-current"
-                onsubmit="return confirm('Purge current goBGP routes and apply the current enabled state from the UI?')">
-            <button class="button primary" type="submit">
-              <i class="fa-solid fa-upload"></i> Apply Current State
-            </button>
-          </form>
-          <form method="post" action="/settings/rediscover-all"
-                onsubmit="return confirm('Re-discover all sites, then purge current goBGP routes and re-apply the current enabled state?')">
-            <button class="button warning" type="submit">
-              <i class="fa-solid fa-wand-magic-sparkles"></i> Rediscover All + Apply
-            </button>
-          </form>
-        </div>
-        <div class="callout secondary" style="margin-top:0.85rem;margin-bottom:0;font-size:0.83rem">
-          <p style="margin:0 0 0.35rem"><strong>Apply Current State</strong> clears the current goBGP RIB and re-applies all active prefixes from enabled sites, including manual prefixes.</p>
-          <p style="margin:0"><strong>Rediscover All + Apply</strong> refreshes discovery prefixes for every site in the database, then rebuilds the goBGP state from the updated UI data.</p>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  {# ── Maintenance ──────────────────────────────────────────── #}
-  <div class="cell large-6">
-    <div class="card">
-      <div class="card-divider">
-        <i class="fa-solid fa-screwdriver-wrench"></i> Maintenance
-      </div>
-      <div class="card-section">
-        <p style="margin-bottom:0.6rem;color:#6b7280;font-size:0.88rem">
-          Remove inactive prefix records from the database. Active BGP routes are not affected.
-        </p>
-        <form method="post" action="/settings/purge-inactive"
-              onsubmit="return confirm('Purge all inactive prefix records?')">
-          <button class="button alert hollow" type="submit">
-            <i class="fa-solid fa-trash-can"></i> Purge inactive prefixes
-          </button>
-        </form>
-      </div>
-    </div>
-  </div>
-
-  <div class="cell large-6">
-    <div class="card">
-      <div class="card-divider">
-        <i class="fa-solid fa-file-export"></i> Configuration
-      </div>
-      <div class="card-section">
-        {% if configuration_status %}
-        <div class="callout secondary" style="margin-bottom:0.85rem">
-          <strong>Last config operation:</strong> {{ configuration_status }}
-        </div>
-        {% endif %}
-        <div style="display:flex;gap:0.75rem;flex-wrap:wrap">
-          <a class="button primary hollow" href="/settings/export">
-            <i class="fa-solid fa-download"></i> Export JSON
-          </a>
-          <form method="post" action="/settings/import" enctype="multipart/form-data" style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-            <input type="file" name="config_file" accept="application/json,.json" required>
-            <button class="button success" type="submit">
-              <i class="fa-solid fa-upload"></i> Import JSON
-            </button>
-          </form>
-        </div>
-        <p style="margin:0.85rem 0 0;color:#6b7280;font-size:0.83rem">
-          Import works as upsert: existing next-hops, sites and prefixes are updated, missing ones are created, and records absent from the file are left untouched.
-        </p>
-      </div>
-    </div>
-  </div>
-
 </div>
-{% endblock %}
 
+<div class="v2-grid-2">
+  <!-- Discovery mode -->
+  <div class="v2-card">
+    <div class="v2-card-header">
+      <span><i class="fa-solid fa-magnifying-glass-location"></i> Discovery mode</span>
+    </div>
+    <div class="v2-card-body">
+      <form method="post" action="/settings/discovery-mode">
+        <div class="v2-field">
+          <label>How prefixes are discovered when adding or re-discovering sites</label>
+          <select name="mode" class="v2-select">
+            {% for key, label in discovery_modes %}
+            <option value="{{ key }}" {% if key == discovery_mode %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <button type="submit" class="v2-btn v2-btn-accent">
+          <i class="fa-solid fa-floppy-disk"></i> Save changes
+        </button>
+      </form>
+
+      <hr style="border:none;border-top:1px solid var(--border-soft);margin:14px 0">
+
+      <form method="post" action="/settings/ipv6-enabled">
+        <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+          <input type="checkbox" name="enabled" value="on"
+                 {% if ipv6_enabled %}checked{% endif %}
+                 onchange="this.form.submit()"
+                 style="accent-color:var(--brand);width:16px;height:16px">
+          <span style="font-size:12.5px;font-weight:600;color:var(--text)">Announce IPv6 prefixes</span>
+        </label>
+        <p style="font-size:12px;color:var(--text-muted);margin-left:24px;margin-bottom:12px">
+          When off, IPv6 prefixes are filtered out during discovery and skipped during BGP sync.
+        </p>
+      </form>
+
+      <form method="post" action="/settings/auto-rediscover-all">
+        <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+          <input type="checkbox" name="enabled" value="on"
+                 {% if auto_rediscover_all_enabled %}checked{% endif %}
+                 onchange="this.form.submit()"
+                 style="accent-color:var(--brand);width:16px;height:16px">
+          <span style="font-size:12.5px;font-weight:600;color:var(--text)">Auto rediscover all discovery sites</span>
+        </label>
+        <p style="font-size:12px;color:var(--text-muted);margin-left:24px">
+          Runs once per hour for discovery sites only. Currently enabled on {{ auto_rediscover_sites_count }} site(s).
+        </p>
+      </form>
+
+      <div style="margin-top:14px;padding:12px;background:var(--surface-2);border-radius:8px;border:1px solid var(--border-soft);font-size:12px;color:var(--text-muted);line-height:1.7">
+        <div>
+          <i class="fa-solid fa-star" style="color:var(--warn);margin-right:6px"></i>
+          <b style="color:var(--text)">RIPE Stat</b> — exact BGP prefix per IP. Best for most domains.
+        </div>
+        <div>
+          <i class="fa-solid fa-book" style="color:var(--brand);margin-right:6px"></i>
+          <b style="color:var(--text)">RDAP</b> — allocation block from regional registries.
+        </div>
+        <div>
+          <i class="fa-solid fa-triangle-exclamation" style="color:var(--err);margin-right:6px"></i>
+          <b style="color:var(--text)">ASN all</b> — every prefix in the ASN. Can return thousands.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Database stats -->
+  <div class="v2-card">
+    <div class="v2-card-header">
+      <span><i class="fa-solid fa-chart-bar"></i> Database stats</span>
+    </div>
+    <div class="v2-card-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+        <div style="padding:10px 12px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px">
+          <div style="font-size:10.5px;color:var(--text-subtle);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">
+            <i class="fa-solid fa-layer-group" style="margin-right:5px"></i>Sites
+          </div>
+          <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:3px">{{ sites_count }}</div>
+        </div>
+        <div style="padding:10px 12px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px">
+          <div style="font-size:10.5px;color:var(--text-subtle);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">
+            <i class="fa-solid fa-list" style="margin-right:5px"></i>Prefixes
+          </div>
+          <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:3px">{{ prefixes_count }}</div>
+        </div>
+        <div style="padding:10px 12px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px">
+          <div style="font-size:10.5px;color:var(--text-subtle);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">
+            <i class="fa-solid fa-arrows-left-right" style="margin-right:5px"></i>Next hops
+          </div>
+          <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:3px">{{ next_hops_count }}</div>
+        </div>
+        <div style="padding:10px 12px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px">
+          <div style="font-size:10.5px;color:var(--text-subtle);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">
+            <i class="fa-solid fa-bullhorn" style="margin-right:5px"></i>Enabled sites
+          </div>
+          <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:3px">{{ enabled_sites_count }}</div>
+        </div>
+        <div style="padding:10px 12px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px">
+          <div style="font-size:10.5px;color:var(--text-subtle);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">
+            <i class="fa-solid fa-route" style="margin-right:5px"></i>Active prefixes
+          </div>
+          <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:3px">{{ active_prefixes_count }}</div>
+        </div>
+        <div style="padding:10px 12px;background:var(--surface-2);border:1px solid var(--border-soft);border-radius:8px">
+          <div style="font-size:10.5px;color:var(--text-subtle);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">
+            <i class="fa-solid fa-tower-broadcast" style="margin-right:5px"></i>Announced
+          </div>
+          <div style="font-size:22px;font-weight:700;color:var(--text);margin-top:3px">{{ announced_prefixes_count }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Theme schedule -->
+<div class="v2-card" style="margin-bottom:14px">
+  <div class="v2-card-header">
+    <span><i class="fa-solid fa-circle-half-stroke"></i> Theme schedule</span>
+  </div>
+  <div class="v2-card-body">
+    <form method="post" action="/settings/theme-schedule">
+      <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
+        <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:8px">
+          <input type="checkbox" name="enabled" value="on"
+                 {% if theme_schedule_enabled %}checked{% endif %}
+                 style="accent-color:var(--brand);width:16px;height:16px">
+          <span style="font-size:12.5px;font-weight:600;color:var(--text)">Switch theme by time</span>
+        </label>
+        <div class="v2-field" style="margin:0;min-width:150px">
+          <label>Dark from</label>
+          <input type="time" name="dark_start" value="{{ theme_dark_start }}" class="v2-input" required>
+        </div>
+        <div class="v2-field" style="margin:0;min-width:150px">
+          <label>Dark until</label>
+          <input type="time" name="dark_end" value="{{ theme_dark_end }}" class="v2-input" required>
+        </div>
+        <button type="submit" class="v2-btn v2-btn-accent" style="margin-bottom:0">
+          <i class="fa-solid fa-floppy-disk"></i> Save schedule
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- goBGP Sync -->
+<div class="v2-card" style="margin-bottom:14px">
+  <div class="v2-card-header">
+    <span><i class="fa-solid fa-arrows-rotate"></i> goBGP sync</span>
+    <span class="v2-status active">active</span>
+  </div>
+  <div class="v2-card-body">
+    <p style="margin:0 0 10px;color:var(--text-muted);font-size:12.5px">
+      Use these actions after a VPS reboot, a goBGP restart, or to rebuild the server state from the UI.
+    </p>
+    <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <form method="post" action="/settings/apply-current"
+            onsubmit="return confirm('Purge current goBGP routes and apply the current enabled state from the UI?')">
+        <button type="submit" class="v2-btn v2-btn-accent">
+          <i class="fa-solid fa-upload"></i> Apply current state
+        </button>
+      </form>
+      <form method="post" action="/settings/rediscover-all"
+            onsubmit="return confirm('Re-discover all sites, then purge current goBGP routes and re-apply the current enabled state?')">
+        <button type="submit" class="v2-btn v2-btn-warning">
+          <i class="fa-solid fa-wand-magic-sparkles"></i> Rediscover all + apply
+        </button>
+      </form>
+    </div>
+    <div style="padding:10px;background:var(--surface-2);border-radius:8px;font-size:12px;color:var(--text-muted);border:1px solid var(--border-soft)">
+      <i class="fa-solid fa-clock-rotate-left" style="margin-right:6px"></i>
+      <b style="color:var(--text)">Last operation:</b> {{ maintenance_status or '—' }}
+    </div>
+  </div>
+</div>
+
+<div class="v2-grid-2">
+  <!-- Maintenance -->
+  <div class="v2-card">
+    <div class="v2-card-header">
+      <span><i class="fa-solid fa-screwdriver-wrench"></i> Maintenance</span>
+    </div>
+    <div class="v2-card-body">
+      <p style="margin:0 0 10px;color:var(--text-muted);font-size:12.5px">
+        Remove inactive prefix records from the database. Active BGP routes are not affected.
+      </p>
+      <form method="post" action="/settings/purge-inactive"
+            onsubmit="return confirm('Purge all inactive prefix records?')">
+        <button type="submit" class="v2-btn v2-btn-danger">
+          <i class="fa-solid fa-trash-can"></i> Purge inactive prefixes
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Configuration -->
+  <div class="v2-card">
+    <div class="v2-card-header">
+      <span><i class="fa-solid fa-file-export"></i> Configuration</span>
+    </div>
+    <div class="v2-card-body">
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+        <a href="/settings/export" class="v2-btn v2-btn-accent">
+          <i class="fa-solid fa-download"></i> Export JSON
+        </a>
+        <form method="post" action="/settings/import" enctype="multipart/form-data"
+              style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="file" name="config_file" accept="application/json,.json" required
+                 style="font-size:12px;color:var(--text-muted)">
+          <button type="submit" class="v2-btn v2-btn-success">
+            <i class="fa-solid fa-upload"></i> Import JSON
+          </button>
+        </form>
+      </div>
+      <div style="padding:10px;background:var(--surface-2);border-radius:8px;font-size:12px;color:var(--text-muted);border:1px solid var(--border-soft)">
+        <i class="fa-solid fa-clock-rotate-left" style="margin-right:6px"></i>
+        <b style="color:var(--text)">Last config:</b> {{ configuration_status or '—' }}
+      </div>
+      <p style="margin:10px 0 0;color:var(--text-muted);font-size:12px">
+        Import works as upsert: existing next-hops, sites and prefixes are updated, missing ones are created, and records absent from the file are left untouched.
+      </p>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

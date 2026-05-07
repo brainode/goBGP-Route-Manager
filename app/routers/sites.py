@@ -41,27 +41,37 @@ def _format_tags(tags: list[str]) -> str:
     return ", ".join(tags)
 
 
+def _collect_all_tags(sites: list[Site]) -> list[str]:
+    all_tags: set[str] = set()
+    for site in sites:
+        all_tags.update(_parse_tags(site.tags))
+    return sorted(all_tags)
+
+
+def _next_hop_summary(next_hops: list[NextHop]) -> str:
+    labels = [hop.name.strip() if hop.name and hop.name.strip() else hop.ip for hop in next_hops]
+    return " · ".join(labels) if labels else "No next hops"
+
+
 @router.get("/sites", response_class=HTMLResponse)
 def list_sites(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     sites = db.query(Site).options(joinedload(Site.next_hop), joinedload(Site.prefixes)).order_by(Site.domain.asc()).all()
     site_service.attach_runtime_status(sites, settings_service.get_ipv6_enabled(db))
     next_hops = db.query(NextHop).order_by(NextHop.ip.asc()).all()
     active_jobs = db.query(Job).filter(Job.status.in_(["pending", "running"]), Job.site_id.isnot(None)).all()
-    all_tags: set[str] = set()
-    for site in sites:
-        all_tags.update(_parse_tags(site.tags))
+    all_tags = _collect_all_tags(sites)
 
-    return templates.TemplateResponse(
-        "sites.html",
-        {
-            "request": request,
-            "sites": sites,
-            "next_hops": next_hops,
-            "active_job_by_site": {j.site_id: j.id for j in active_jobs},
-            "all_tags": sorted(all_tags),
-            "title": "Sites",
-        },
-    )
+    context = {
+        "request": request,
+        "sites": sites,
+        "next_hops": next_hops,
+        "next_hop_summary": _next_hop_summary(next_hops),
+        "active_job_by_site": {j.site_id: j.id for j in active_jobs},
+        "all_tags": all_tags,
+        "title": "Sites",
+    }
+    context.update(settings_service.theme_context(db))
+    return templates.TemplateResponse("sites.html", context)
 
 
 @router.post("/sites")
@@ -113,9 +123,15 @@ def create_site(
 def site_detail(site_id: int, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     site = _get_site_or_404(db, site_id, with_prefixes=True)
     site_service.attach_runtime_status([site], settings_service.get_ipv6_enabled(db))
-    return templates.TemplateResponse(
-        "site_detail.html", {"request": request, "site": site, "title": f"Site {site.domain}"}
-    )
+    all_sites = db.query(Site).all()
+    context = {
+        "request": request,
+        "site": site,
+        "all_tags": _collect_all_tags(all_sites),
+        "title": f"Site {site.domain}",
+    }
+    context.update(settings_service.theme_context(db))
+    return templates.TemplateResponse("site_detail.html", context)
 
 
 @router.post("/sites/{site_id}/toggle")

@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import NextHop, Site
+from ..services import settings_service
 
 templates = Jinja2Templates(directory="app/templates")
 router = APIRouter()
@@ -18,9 +19,9 @@ router = APIRouter()
 @router.get("/next-hops", response_class=HTMLResponse)
 def list_next_hops(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     next_hops = db.query(NextHop).order_by(NextHop.ip.asc()).all()
-    return templates.TemplateResponse(
-        "next_hops.html", {"request": request, "next_hops": next_hops, "title": "Next Hops"}
-    )
+    context = {"request": request, "next_hops": next_hops, "title": "Next Hops"}
+    context.update(settings_service.theme_context(db))
+    return templates.TemplateResponse("next_hops.html", context)
 
 
 @router.post("/next-hops")

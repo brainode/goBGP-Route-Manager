@@ -13,6 +13,9 @@ from ..config import (
     DISCOVERY_MODE_KEY,
     IPV6_ENABLED_KEY,
     MAINTENANCE_STATUS_KEY,
+    THEME_DARK_END_KEY,
+    THEME_DARK_START_KEY,
+    THEME_SCHEDULE_ENABLED_KEY,
 )
 from ..database import SessionLocal
 from ..discovery import DISCOVERY_MODE_DEFAULT, DISCOVERY_MODES
@@ -46,6 +49,30 @@ def get_ipv6_enabled(db: Session) -> bool:
 
 def get_auto_rediscover_all_enabled(db: Session) -> bool:
     return get_setting_value(db, AUTO_REDISCOVER_ALL_KEY) == "true"
+
+
+def get_theme_schedule_enabled(db: Session) -> bool:
+    return get_setting_value(db, THEME_SCHEDULE_ENABLED_KEY) == "true"
+
+
+def get_theme_dark_start(db: Session) -> str:
+    return _valid_theme_time(get_setting_value(db, THEME_DARK_START_KEY)) or "22:00"
+
+
+def get_theme_dark_end(db: Session) -> str:
+    return _valid_theme_time(get_setting_value(db, THEME_DARK_END_KEY)) or "07:00"
+
+
+def theme_context(db: Session) -> dict[str, object]:
+    return {
+        "theme_schedule_enabled": get_theme_schedule_enabled(db),
+        "theme_dark_start": get_theme_dark_start(db),
+        "theme_dark_end": get_theme_dark_end(db),
+    }
+
+
+def normalize_theme_time(value: object) -> str | None:
+    return _valid_theme_time(value)
 
 
 def set_maintenance_status(message: str) -> None:
@@ -94,6 +121,9 @@ def serialize_configuration(db: Session) -> dict[str, object]:
             "discovery_mode": get_discovery_mode(db),
             "ipv6_enabled": get_ipv6_enabled(db),
             "auto_rediscover_all_enabled": get_auto_rediscover_all_enabled(db),
+            "theme_schedule_enabled": get_theme_schedule_enabled(db),
+            "theme_dark_start": get_theme_dark_start(db),
+            "theme_dark_end": get_theme_dark_end(db),
         },
         "next_hops": [{"ip": hop.ip, "name": hop.name} for hop in next_hops],
         "sites": [
@@ -181,8 +211,7 @@ def import_configuration(db: Session, payload: dict[str, object]) -> dict[str, i
         row.auto_rediscover_enabled = (
             bool(item.get("auto_rediscover_enabled", False)) if not is_manual else False
         )
-        tags_raw = str(item.get("tags", "")).strip()
-        row.tags = tags_raw or None
+        row.tags = _format_tags(_parse_tags(item.get("tags", ""))) or None
         row.next_hop_id = next_hops_by_ip[next_hop_ip].id
         stats["sites_created" if created else "sites_updated"] += 1
 
@@ -219,6 +248,19 @@ def import_configuration(db: Session, payload: dict[str, object]) -> dict[str, i
         ipv6_enabled = settings_payload.get("ipv6_enabled")
         if isinstance(ipv6_enabled, bool):
             set_setting_value(db, IPV6_ENABLED_KEY, "true" if ipv6_enabled else "false")
+        theme_schedule_enabled = settings_payload.get("theme_schedule_enabled")
+        if isinstance(theme_schedule_enabled, bool):
+            set_setting_value(
+                db,
+                THEME_SCHEDULE_ENABLED_KEY,
+                "true" if theme_schedule_enabled else "false",
+            )
+        theme_dark_start = _valid_theme_time(settings_payload.get("theme_dark_start"))
+        if theme_dark_start:
+            set_setting_value(db, THEME_DARK_START_KEY, theme_dark_start)
+        theme_dark_end = _valid_theme_time(settings_payload.get("theme_dark_end"))
+        if theme_dark_end:
+            set_setting_value(db, THEME_DARK_END_KEY, theme_dark_end)
 
     sync_global_auto_rediscover_setting(db)
     db.commit()
@@ -234,9 +276,35 @@ def _is_valid_ip(value: str) -> bool:
         return False
 
 
+def _parse_tags(raw: object) -> list[str]:
+    if not raw:
+        return []
+    return sorted({tag.strip().lower() for tag in str(raw).split(",") if tag.strip()})
+
+
+def _format_tags(tags: list[str]) -> str:
+    return ", ".join(tags)
+
+
 def _is_valid_cidr(value: str) -> bool:
     try:
         ip_network(value, strict=False)
         return True
     except Exception:
         return False
+
+
+def _valid_theme_time(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    parts = value.strip().split(":")
+    if len(parts) != 2:
+        return None
+    try:
+        hour = int(parts[0])
+        minute = int(parts[1])
+    except ValueError:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    return f"{hour:02d}:{minute:02d}"

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session, joinedload
 from .. import state as _state
 from ..database import get_db
 from ..models import Job, JobLog, Site
+from ..services import settings_service
 
 templates = Jinja2Templates(directory="app/templates")
 router = APIRouter()
@@ -54,7 +55,9 @@ def cancel_job(job_id: int, db: Session = Depends(get_db)):
 @router.get("/logs", response_class=HTMLResponse)
 def logs_list(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     jobs = db.query(Job).options(joinedload(Job.site)).order_by(Job.id.desc()).limit(100).all()
-    return templates.TemplateResponse("logs.html", {"request": request, "jobs": jobs, "title": "Logs"})
+    context = {"request": request, "jobs": jobs, "title": "Logs"}
+    context.update(settings_service.theme_context(db))
+    return templates.TemplateResponse("logs.html", context)
 
 
 @router.get("/logs/{job_id}/download")
@@ -85,7 +88,6 @@ def log_detail(job_id: int, request: Request, db: Session = Depends(get_db)) -> 
         raise HTTPException(status_code=404, detail="job not found")
     site = db.query(Site).filter(Site.id == job.site_id).first() if job.site_id else None
     logs = db.query(JobLog).filter(JobLog.job_id == job_id).order_by(JobLog.id.asc()).all()
-    return templates.TemplateResponse(
-        "logs_detail.html",
-        {"request": request, "job": job, "site": site, "logs": logs, "title": f"Job #{job_id}"},
-    )
+    context = {"request": request, "job": job, "site": site, "logs": logs, "title": f"Job #{job_id}"}
+    context.update(settings_service.theme_context(db))
+    return templates.TemplateResponse("logs_detail.html", context)

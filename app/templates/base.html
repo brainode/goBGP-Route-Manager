@@ -5,34 +5,133 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{{ title }} - goBGP Route Manager</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/foundation-sites@6.8.1/dist/css/foundation.min.css" crossorigin="anonymous" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" crossorigin="anonymous" />
-    <link rel="stylesheet" href="/static/style.css" />
+    <link rel="stylesheet" href="/static/style.css?v={{ request.app.state.static_version }}" />
+    <script src="/static/theme.js?v={{ request.app.state.static_version }}"></script>
+    <script>
+      window.THEME_SCHEDULE = {
+        enabled: {{ (theme_schedule_enabled|default(false))|tojson }},
+        darkStart: {{ (theme_dark_start|default('22:00'))|tojson }},
+        darkEnd: {{ (theme_dark_end|default('07:00'))|tojson }}
+      };
+      (function() {
+        try {
+          const scheduled = window.resolveScheduledTheme ? window.resolveScheduledTheme(window.THEME_SCHEDULE) : null;
+          const saved = scheduled || localStorage.getItem('gobgp_theme') || 'light';
+          document.documentElement.dataset.theme = saved;
+          if (window.applyTheme) window.applyTheme(saved, { persist: !scheduled });
+        } catch (_) {}
+      })();
+    </script>
   </head>
   <body>
-    <nav class="app-nav">
-      <div class="app-nav-inner">
-        <a class="app-nav-brand" href="/sites">
-          <i class="fa-solid fa-network-wired"></i>
-          goBGP Route Manager
-        </a>
-        <ul class="app-nav-menu">
-          <li><a href="/sites"><i class="fa-solid fa-layer-group"></i> Sites</a></li>
-          <li><a href="/next-hops"><i class="fa-solid fa-right-left"></i> Next Hops</a></li>
-          <li><a href="/gobgp-status"><i class="fa-solid fa-circle-dot"></i> GoBGP Status</a></li>
-          <li><a href="/logs"><i class="fa-solid fa-scroll"></i> Logs</a></li>
-          <li><a href="/settings"><i class="fa-solid fa-gear"></i> Settings</a></li>
-        </ul>
-      </div>
-    </nav>
+    <div class="app-layout">
+      <!-- SIDEBAR -->
+      <aside class="app-sidebar">
+        <div class="app-sidebar-brand">
+          <a href="/sites">
+            <span class="brand-icon"><i class="fa-solid fa-network-wired"></i></span>
+            <div>
+              <div class="brand-title">goBGP</div>
+              <div class="brand-subtitle">Route Manager</div>
+            </div>
+          </a>
+        </div>
 
-    <main class="grid-container fluid page-wrap">
-      {% block content %}{% endblock %}
-    </main>
+        <nav class="app-sidebar-nav">
+          <a href="/sites" class="{% if request.url.path == '/sites' or request.url.path.startswith('/sites/') %}active{% endif %}">
+            <i class="fa-solid fa-layer-group"></i> Sites
+          </a>
+          <a href="/next-hops" class="{% if request.url.path == '/next-hops' %}active{% endif %}">
+            <i class="fa-solid fa-arrows-left-right"></i> Next Hops
+          </a>
+          <a href="/gobgp-status" class="{% if request.url.path == '/gobgp-status' %}active{% endif %}">
+            <i class="fa-solid fa-circle-dot"></i> goBGP Status
+          </a>
+          <a href="/logs" class="{% if request.url.path == '/logs' or request.url.path.startswith('/logs/') %}active{% endif %}">
+            <i class="fa-solid fa-scroll"></i> Logs
+          </a>
+          <a href="/settings" class="{% if request.url.path == '/settings' %}active{% endif %}">
+            <i class="fa-solid fa-gear"></i> Settings
+          </a>
+        </nav>
 
-    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/foundation-sites@6.8.1/dist/js/foundation.min.js"></script>
-    <script>$(document).foundation();</script>
+        <div style="flex:1;overflow-y:auto">
+          {% block sidebar_extras %}{% endblock %}
+        </div>
+
+        <div class="app-sidebar-bottom">
+          <div class="theme-toggle">
+            <button type="button" id="theme-light" onclick="window.applyTheme('light')">
+              <i class="fa-solid fa-sun" style="font-size:10px"></i> Light
+            </button>
+            <button type="button" id="theme-dark" onclick="window.applyTheme('dark')">
+              <i class="fa-solid fa-moon" style="font-size:10px"></i> Darcula
+            </button>
+          </div>
+          <div class="sidebar-health">
+            <span class="sidebar-health-dot" id="health-dot"></span>
+            <div style="min-width:0">
+              <div class="sidebar-health-title" id="health-title">goBGP healthy</div>
+              <div class="sidebar-health-meta" id="health-meta">gRPC 50051 · 12ms</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- MAIN -->
+      <main class="app-main">
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+
+    <script>
+      // Apply theme on load
+      (function() {
+        const scheduled = window.resolveScheduledTheme ? window.resolveScheduledTheme(window.THEME_SCHEDULE) : null;
+        const saved = scheduled || document.documentElement.dataset.theme || 'light';
+        if (window.applyTheme) window.applyTheme(saved, { persist: !scheduled });
+        else document.addEventListener('DOMContentLoaded', function() { window.applyTheme(saved, { persist: !scheduled }); });
+
+        // Highlight active theme button
+        function updateThemeButtons() {
+          const name = document.body.dataset.theme || document.documentElement.dataset.theme || 'light';
+          document.getElementById('theme-light').classList.toggle('active', name === 'light');
+          document.getElementById('theme-dark').classList.toggle('active', name === 'dark');
+        }
+        const orig = window.applyTheme;
+        window.applyTheme = function(name, options) { orig(name, options); updateThemeButtons(); };
+        if (window.startThemeScheduleTimer) window.startThemeScheduleTimer(updateThemeButtons);
+        updateThemeButtons();
+      })();
+
+      // Tag input helper
+      window.addTagToInput = function(inputId, tag) {
+        const input = document.getElementById(inputId);
+        if (!input || !tag) return;
+        const current = input.value.split(',').map((v) => v.trim()).filter(Boolean);
+        const seen = new Set(current.map((v) => v.toLowerCase()));
+        if (!seen.has(String(tag).toLowerCase())) current.push(tag);
+        input.value = current.join(', ');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+      };
+
+      // Fetch health status
+      (function() {
+        async function checkHealth() {
+          try {
+            const r = await fetch('/health');
+            const d = await r.json();
+            const ok = d.status === 'ok';
+            document.getElementById('health-dot').classList.toggle('err', !ok);
+            document.getElementById('health-title').textContent = ok ? 'goBGP healthy' : 'goBGP error';
+            document.getElementById('health-meta').textContent = (d.message || d.status || '');
+          } catch (_) {}
+        }
+        checkHealth();
+        setInterval(checkHealth, 30000);
+      })();
+    </script>
   </body>
 </html>
-

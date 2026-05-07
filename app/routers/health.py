@@ -20,9 +20,11 @@ def root() -> RedirectResponse:
 
 
 @router.get("/gobgp-status", response_class=HTMLResponse)
-def gobgp_status(request: Request) -> HTMLResponse:
+def gobgp_status(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     status = _state.gobgp.status()
-    return templates.TemplateResponse("gobgp_status.html", {"request": request, "status": status, "title": "GoBGP Status"})
+    context = {"request": request, "status": status, "title": "GoBGP Status"}
+    context.update(settings_service.theme_context(db))
+    return templates.TemplateResponse("gobgp_status.html", context)
 
 
 @router.get("/health")

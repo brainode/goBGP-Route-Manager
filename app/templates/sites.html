@@ -1,150 +1,186 @@
 <!-- SPDX-License-Identifier: GPL-2.0-only -->
 {% extends "base.html" %}
+
+{% block sidebar_extras %}
+<div style="padding:14px 16px 8px;font-size:10.5px;font-weight:700;color:var(--text-subtle);letter-spacing:0.7px;text-transform:uppercase">Status</div>
+<div style="padding:0 6px">
+  {% set status_counts = {'active':0,'partial':0,'missing':0,'paused':0} %}
+  {% for s in sites %}
+    {% if s.display_status in status_counts %}
+      {% set _ = status_counts.__setitem__(s.display_status, status_counts[s.display_status] + 1) %}
+    {% endif %}
+  {% endfor %}
+  {% for st in ['active','partial','missing','paused'] %}
+  <div class="sidebar-filter {% if request.query_params.get('status') == st %}active{% endif %}"
+       onclick="setFilter('status','{{ st }}')"
+       style="display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12.5px;color:{% if request.query_params.get('status') == st %}var(--text){% else %}var(--text-muted){% endif %};cursor:pointer;border-radius:6px;background:{% if request.query_params.get('status') == st %}var(--surface-hover){% else %}transparent{% endif %};font-weight:{% if request.query_params.get('status') == st %}600{% else %}500{% endif %}"
+       onmouseenter="if(!this.classList.contains('active'))this.style.background='var(--surface-hover)'"
+       onmouseleave="if(!this.classList.contains('active'))this.style.background='transparent'"
+  >
+    <span style="width:7px;height:7px;border-radius:50%;background:{% if st=='active' %}var(--ok){% elif st=='partial' %}var(--warn){% elif st=='missing' %}var(--err){% else %}var(--neutral){% endif %}"></span>
+    {{ st[0]|upper }}{{ st[1:] }}
+    <span style="margin-left:auto;font-size:10.5px;color:var(--text-subtle)">{{ status_counts[st] }}</span>
+  </div>
+  {% endfor %}
+</div>
+
+<div style="padding:14px 16px 8px;font-size:10.5px;font-weight:700;color:var(--text-subtle);letter-spacing:0.7px;text-transform:uppercase">Next hop</div>
+<div style="padding:0 6px">
+  {% for hop in next_hops %}
+  <div class="sidebar-filter {% if request.query_params.get('hop') == hop.ip %}active{% endif %}"
+       onclick="setFilter('hop','{{ hop.ip }}')"
+       style="display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:12.5px;color:{% if request.query_params.get('hop') == hop.ip %}var(--text){% else %}var(--text-muted){% endif %};cursor:pointer;border-radius:6px;background:{% if request.query_params.get('hop') == hop.ip %}var(--surface-hover){% else %}transparent{% endif %};font-weight:{% if request.query_params.get('hop') == hop.ip %}600{% else %}500{% endif %}"
+       onmouseenter="if(!this.classList.contains('active'))this.style.background='var(--surface-hover)'"
+       onmouseleave="if(!this.classList.contains('active'))this.style.background='transparent'"
+  >
+    <span style="width:6px;height:6px;border-radius:50%;background:var(--brand)"></span>
+    <span style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px">{{ hop.ip }}</span>
+    <span style="color:var(--text-subtle);font-size:11px">· {{ hop.name or '—' }}</span>
+    <span style="margin-left:auto;font-size:10.5px;color:var(--text-subtle)">{{ hop.sites|length }}</span>
+  </div>
+  {% endfor %}
+</div>
+
+{% if all_tags %}
+<div style="padding:14px 16px 8px;font-size:10.5px;font-weight:700;color:var(--text-subtle);letter-spacing:0.7px;text-transform:uppercase">Tags</div>
+<div style="padding:4px 12px;display:flex;flex-wrap:wrap;gap:5px">
+  {% for t in all_tags %}
+  <span class="v2-tag {% if request.query_params.get('tag') == t %}active{% endif %}"
+        onclick="setFilter('tag','{{ t }}')"
+        style="cursor:pointer">{{ t }}</span>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
+
 {% block content %}
-<div class="grid-x grid-margin-x">
+<datalist id="all-tag-options">
+  {% for tag in all_tags %}
+  <option value="{{ tag }}"></option>
+  {% endfor %}
+</datalist>
 
-  {# ── Add Site form ─────────────────────────────────────────── #}
-  <div class="cell large-4">
-    <div class="card">
-      <div class="card-divider"><i class="fa-solid fa-plus"></i> Add Site</div>
-      <div class="card-section">
+<!-- Page Header -->
+<div class="v2-page-header">
+  <div>
+    <h1>Sites</h1>
+    <p>Routes announced via goBGP</p>
+  </div>
+  <div class="v2-page-header-right">
+    <div style="display:flex;align-items:center;gap:8px;background:var(--surface);border:1px solid var(--border);border-radius:9px;padding:8px 12px;width:260px">
+      <i class="fa-solid fa-magnifying-glass" style="color:var(--text-subtle);font-size:12px"></i>
+      <input type="text" id="search-input" placeholder="Search sites…"
+             style="flex:1;border:none;background:transparent;outline:none;font-size:13px;color:var(--text)"
+             oninput="applyFilters()">
+    </div>
+    <button class="v2-btn v2-btn-ghost" onclick="window.location.reload()" title="Refresh">
+      <i class="fa-solid fa-rotate"></i>
+    </button>
+    <button class="v2-btn v2-btn-accent" onclick="document.getElementById('add-site-modal').classList.remove('hidden')">
+      <i class="fa-solid fa-plus"></i> New site
+    </button>
+  </div>
+</div>
 
-        {# ── Site type toggle ──────────────────────────────── #}
-        <div class="button-group" style="margin-bottom:0.9rem">
-          <button type="button" class="button small primary" id="btn-domain"
-                  onclick="setSiteType('domain')">
-            <i class="fa-solid fa-globe"></i> By Domain
-          </button>
-          <button type="button" class="button small hollow secondary" id="btn-manual"
-                  onclick="setSiteType('manual')">
-            <i class="fa-solid fa-pen-to-square"></i> Manual Group
-          </button>
-        </div>
-
-        <form method="post" action="/sites">
-          <input type="hidden" name="site_type" id="site-type-input" value="domain" />
-          <label id="domain-label">Domain
-            <input type="text" name="domain" id="domain-input"
-                   placeholder="youtube.com" required autocomplete="off" />
-          </label>
-          <label>Next hop
-            <select name="next_hop_id" required>
-              {% for hop in next_hops %}
-              <option value="{{ hop.id }}">{{ hop.ip }}{% if hop.name %} — {{ hop.name }}{% endif %}</option>
-              {% endfor %}
-            </select>
-          </label>
-          <label>Tags
-            <input type="text" name="tags" placeholder="video, streaming" autocomplete="off" />
-          </label>
-          <div style="margin-bottom:0.8rem">
-            <label style="display:inline-flex;align-items:center;gap:0.4rem;margin-bottom:0.4rem;cursor:pointer">
-              <input type="checkbox" name="enabled" checked /> Enabled on create
-            </label><br>
-            <label style="display:inline-flex;align-items:center;gap:0.4rem;cursor:pointer" id="discover-label">
-              <input type="checkbox" name="discover" id="discover-checkbox" checked /> Auto-discover prefixes
-            </label>
-          </div>
-          <button class="button success expanded" type="submit">
-            <i class="fa-solid fa-plus"></i> Create Site
-          </button>
-        </form>
-
-        <script>
-          function setSiteType(type) {
-            const isManual = type === 'manual';
-            document.getElementById('site-type-input').value = isManual ? 'manual' : 'discovery';
-            const lbl = document.getElementById('domain-label');
-            const inp = document.getElementById('domain-input');
-            lbl.childNodes[0].textContent = isManual ? 'Name ' : 'Domain';
-            inp.placeholder = isManual ? 'Internal DC-1 routes' : 'youtube.com';
-            const discoverLabel = document.getElementById('discover-label');
-            const discoverCb   = document.getElementById('discover-checkbox');
-            discoverLabel.style.display = isManual ? 'none' : '';
-            discoverCb.disabled = isManual;
-            if (isManual) discoverCb.checked = false;
-            else discoverCb.checked = true;
-            document.getElementById('btn-domain').className =
-              isManual ? 'button small hollow secondary' : 'button small primary';
-            document.getElementById('btn-manual').className =
-              isManual ? 'button small primary' : 'button small hollow secondary';
-          }
-        </script>
-
-        {% if not next_hops %}
-        <div class="callout warning" style="margin-top:0.8rem;margin-bottom:0;font-size:0.87rem">
-          <i class="fa-solid fa-triangle-exclamation"></i>
-          No next hops. <a href="/next-hops">Add one first.</a>
-        </div>
-        {% endif %}
+<!-- Stats -->
+{% set total_announced = sites | sum(attribute='announced_prefixes_count') %}
+{% set total_desired = sites | sum(attribute='desired_prefixes_count') %}
+<div class="v2-stat-grid">
+  <div class="v2-stat">
+    <div class="v2-stat-label"><i class="fa-solid fa-layer-group"></i> Sites</div>
+    <div class="v2-stat-value">{{ sites|length }}</div>
+    <div class="v2-stat-hint">2 added this week</div>
+  </div>
+  <div class="v2-stat">
+    <div class="v2-stat-label"><i class="fa-solid fa-route"></i> Announced</div>
+    <div class="v2-stat-value">
+      {{ total_announced }}
+      <span style="font-size:14px;color:var(--text-subtle);font-weight:600">/ {{ total_desired }}</span>
+    </div>
+    <div class="v2-stat-hint">
+      <div style="height:4px;background:var(--border-soft);border-radius:2px;margin-top:4px;overflow:hidden">
+        <div style="width:{% if total_desired > 0 %}{{ (total_announced/total_desired*100)|round|int }}{% else %}0{% endif %}%;height:100%;background:var(--ok)"></div>
       </div>
     </div>
   </div>
+  <div class="v2-stat">
+    <div class="v2-stat-label"><i class="fa-solid fa-arrows-left-right"></i> Next hops</div>
+    <div class="v2-stat-value">{{ next_hops|length }}</div>
+    <div class="v2-stat-hint">{{ next_hop_summary }}</div>
+  </div>
+  <div class="v2-stat">
+    <div class="v2-stat-label"><i class="fa-solid fa-triangle-exclamation"></i> Issues</div>
+    {% set issues = sites | selectattr('display_status','in',['missing','partial']) | list | length %}
+    <div class="v2-stat-value" style="color:{% if issues > 0 %}var(--err){% else %}var(--text){% endif %}">{{ issues }}</div>
+    <div class="v2-stat-hint {% if issues > 0 %}err{% endif %}">need attention</div>
+  </div>
+</div>
 
-  {# ── Sites table ────────────────────────────────────────────── #}
-  <div class="cell large-8">
-    {% if not sites %}
-    <div class="callout secondary">
-      <i class="fa-solid fa-circle-info"></i>
-      No sites yet. Add your first site using the form on the left.
-    </div>
-    {% else %}
-    <div class="grid-x grid-margin-x" style="margin-bottom:0.75rem">
-      <div class="cell medium-4">
-        <label style="margin:0;font-size:0.85rem">Filter by next hop
-          <select id="filter-next-hop">
-            <option value="">All</option>
-            {% for hop in next_hops %}
-            <option value="{{ hop.ip }}">{{ hop.ip }}{% if hop.name %} — {{ hop.name }}{% endif %}</option>
-            {% endfor %}
-          </select>
-        </label>
-      </div>
-      <div class="cell medium-4">
-        <label style="margin:0;font-size:0.85rem">Filter by tag
-          <select id="filter-tag">
-            <option value="">All</option>
-            {% for tag in all_tags %}
-            <option value="{{ tag }}">{{ tag }}</option>
-            {% endfor %}
-          </select>
-        </label>
-      </div>
-    </div>
+<!-- Filter chips -->
+<div id="filter-bar" class="v2-filter-bar hidden">
+  <span class="v2-filter-bar-label">Filters:</span>
+  <span id="filter-chips"></span>
+  <button class="v2-filter-bar-clear" onclick="clearAllFilters()">Clear all</button>
+</div>
 
-    <div id="bulk-bar" class="bulk-bar hidden">
-      <div class="bulk-bar-inner">
-        <span class="bulk-count"><span id="bulk-count">0</span> selected</span>
-        <form method="post" action="/sites/bulk-change-next-hop" class="bulk-form">
-          <select name="next_hop_id" required>
-            <option value="" disabled selected>Change next hop…</option>
-            {% for hop in next_hops %}
-            <option value="{{ hop.id }}">{{ hop.ip }}{% if hop.name %} — {{ hop.name }}{% endif %}</option>
-            {% endfor %}
-          </select>
-          <button class="button small" type="submit">Apply</button>
-        </form>
-        <form method="post" action="/sites/bulk-add-tags" class="bulk-form">
-          <input type="text" name="tags" placeholder="Add tags…" required />
-          <button class="button small" type="submit">Add</button>
-        </form>
-        <form method="post" action="/sites/bulk-set-tags" class="bulk-form">
-          <input type="text" name="tags" placeholder="Set tags…" required />
-          <button class="button small" type="submit">Set</button>
-        </form>
-      </div>
-    </div>
+<!-- Bulk ribbon -->
+<div id="bulk-ribbon" class="v2-ribbon hidden">
+  <span class="v2-ribbon-count"><span id="bulk-count">0</span> selected</span>
+  <span class="v2-ribbon-label">Bulk actions:</span>
 
-    <table class="hover stack">
+  <form method="post" action="/sites/bulk-change-next-hop" class="bulk-form" style="display:inline-flex;align-items:center;gap:6px">
+    <select name="next_hop_id" required style="padding:5px 8px;border-radius:6px;border:none;font-size:12px;background:rgba(255,255,255,.18);color:#fff;outline:none">
+      <option value="" disabled selected>Change next hop…</option>
+      {% for hop in next_hops %}
+      <option value="{{ hop.id }}">{{ hop.ip }}{% if hop.name %} — {{ hop.name }}{% endif %}</option>
+      {% endfor %}
+    </select>
+    <button type="submit" class="v2-ribbon-btn"><i class="fa-solid fa-arrows-left-right"></i> Apply</button>
+  </form>
+
+  <form method="post" action="/sites/bulk-add-tags" class="bulk-form" style="display:inline-flex;align-items:center;gap:6px">
+    <input type="text" name="tags" placeholder="Add tags…" required list="all-tag-options"
+           style="padding:5px 8px;border-radius:6px;border:none;font-size:12px;background:rgba(255,255,255,.18);color:#fff;outline:none;width:110px">
+    <button type="submit" class="v2-ribbon-btn"><i class="fa-solid fa-tag"></i> Add</button>
+  </form>
+
+  <form method="post" action="/sites/bulk-set-tags" class="bulk-form" style="display:inline-flex;align-items:center;gap:6px">
+    <input type="text" name="tags" placeholder="Set tags…" required list="all-tag-options"
+           style="padding:5px 8px;border-radius:6px;border:none;font-size:12px;background:rgba(255,255,255,.18);color:#fff;outline:none;width:110px">
+    <button type="submit" class="v2-ribbon-btn"><i class="fa-solid fa-pen"></i> Set</button>
+  </form>
+
+  <span class="v2-ribbon-spacer"></span>
+
+  <button class="v2-ribbon-close" onclick="clearSelection()" title="Clear selection">
+    <i class="fa-solid fa-xmark"></i>
+  </button>
+</div>
+
+<!-- Sites Table -->
+<div class="v2-card">
+  <div class="v2-card-header">
+    <span><i class="fa-solid fa-layer-group"></i> {{ sites|length }} sites</span>
+  </div>
+  {% if not sites %}
+  <div class="v2-card-body" style="padding:24px;color:var(--text-muted);text-align:center">
+    <i class="fa-solid fa-circle-info" style="font-size:24px;margin-bottom:8px;display:block"></i>
+    No sites yet. Add your first site using the button above.
+  </div>
+  {% else %}
+  <div class="v2-card-body-no-pad">
+    <table class="v2-table">
       <thead>
         <tr>
-          <th style="width:2.2rem"><input type="checkbox" id="select-all" /></th>
-          <th>Domain / Name</th>
-          <th>ASN</th>
-          <th>Prefixes</th>
-          <th>Next hop</th>
-          <th>Status</th>
-          <th>Actions</th>
+          <th class="v2-th" style="width:38px">
+            <input type="checkbox" id="select-all" style="accent-color:var(--brand);cursor:pointer">
+          </th>
+          <th class="v2-th">Domain</th>
+          <th class="v2-th">ASN</th>
+          <th class="v2-th">Prefixes</th>
+          <th class="v2-th">Next hop</th>
+          <th class="v2-th">Status</th>
+          <th class="v2-th" style="text-align:right">Actions</th>
         </tr>
       </thead>
       <tbody>
@@ -154,163 +190,330 @@
             data-id="{{ site.id }}"
             data-target="site-prefixes-{{ site.id }}"
             data-next-hop="{{ site.next_hop.ip }}"
-            data-tags="{{ site.tags or '' }}">
-          <td><input type="checkbox" class="site-checkbox" value="{{ site.id }}" /></td>
-          <td>
-            <a href="/sites/{{ site.id }}" style="font-weight:600">{{ site.domain }}</a>
-            <div style="font-size:0.72rem;color:#6b7280;margin-top:0.2rem">
-              {{ site.site_type }}
-              {% if site.tags %}
-              {% for tag in site.tags.split(', ') %}
-              <span class="tag-badge">{{ tag }}</span>
-              {% endfor %}
+            data-tags="{{ site.tags or '' }}"
+            data-status="{{ site.display_status }}"
+            data-domain="{{ site.domain }}"
+            style="cursor:pointer">
+          <td class="v2-td" onclick="event.stopPropagation()">
+            <input type="checkbox" class="site-checkbox" value="{{ site.id }}"
+                   style="accent-color:var(--brand);cursor:pointer"
+                   onclick="event.stopPropagation()">
+          </td>
+          <td class="v2-td">
+            <div style="display:flex;align-items:center;gap:9px">
+              <button onclick="toggleExpand({{ site.id }});event.stopPropagation()"
+                      style="background:transparent;border:none;color:var(--text-subtle);cursor:pointer;padding:0;width:16px;flex-shrink:0">
+                <i id="chevron-{{ site.id }}" class="fa-solid fa-chevron-right" style="font-size:10px;transition:transform .15s"></i>
+              </button>
+              <div>
+                <a href="/sites/{{ site.id }}" style="color:var(--brand-text);font-weight:600;text-decoration:none">{{ site.domain }}</a>
+                <div style="font-size:11.5px;color:var(--text-muted);margin-top:2px;display:flex;gap:5px;flex-wrap:wrap">
+                  <span>{{ site.site_type }}</span>
+                  {% if site.tags %}
+                    {% for tag in site.tags.split(', ') %}
+                    <span class="v2-tag">{{ tag }}</span>
+                    {% endfor %}
+                  {% endif %}
+                </div>
+              </div>
+            </div>
+          </td>
+          <td class="v2-td">
+            {% if site.asn %}
+            <span style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--brand-text);background:var(--brand-bg);padding:2px 7px;border-radius:4px">{{ site.asn }}</span>
+            {% else %}
+            <span style="color:var(--text-subtle)">—</span>
+            {% endif %}
+          </td>
+          <td class="v2-td">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span style="font-weight:700">{{ site.announced_prefixes_count }}</span>
+              <span style="color:var(--text-subtle)">/ {{ site.desired_prefixes_count }}</span>
+              {% if site.desired_prefixes_count > 0 %}
+              {% set pct = (site.announced_prefixes_count / site.desired_prefixes_count * 100)|round|int %}
+              {% set color = 'var(--ok)' if site.announced_prefixes_count == site.desired_prefixes_count else ('var(--err)' if site.announced_prefixes_count == 0 else 'var(--warn)') %}
+              <svg class="v2-donut" viewBox="0 0 18 18">
+                <circle cx="9" cy="9" r="7" fill="none" stroke="var(--border)" stroke-width="2"/>
+                <circle cx="9" cy="9" r="7" fill="none" stroke="{{ color }}" stroke-width="2"
+                        stroke-dasharray="{{ (pct/100)*43.98 }} {{ 43.98 }}" stroke-linecap="round"/>
+              </svg>
               {% endif %}
             </div>
           </td>
-          <td>
-            {% if site.asn %}
-            <span class="label primary">{{ site.asn }}</span>
-            {% else %}<span class="subtle">—</span>{% endif %}
+          <td class="v2-td">
+            <span class="v2-hop-chip">{{ site.next_hop.ip }}</span>
           </td>
-          <td>
-            <span style="font-weight:600">{{ site.announced_prefixes_count }}</span>
-            <span class="subtle">/ {{ site.desired_prefixes_count }}</span>
-          </td>
-          <td><code>{{ site.next_hop.ip }}</code></td>
-          <td id="status-cell-{{ site.id }}">
+          <td class="v2-td" id="status-cell-{{ site.id }}">
             {% if site.id in active_job_by_site %}
-            <span class="label warning"><i class="fa-solid fa-spinner fa-spin"></i> Rediscovering…</span>
-            {% elif site.display_status == 'active' %}
-            <span class="label success"><i class="fa-solid fa-circle-check"></i> Active</span>
-            {% elif site.display_status == 'partial' %}
-            <span class="label warning"><i class="fa-solid fa-circle-half-stroke"></i> Partial</span>
-            {% elif site.display_status == 'missing' %}
-            <span class="label alert"><i class="fa-solid fa-triangle-exclamation"></i> Missing</span>
+            <span class="v2-status running"><i class="fa-solid fa-spinner fa-spin"></i> Rediscovering…</span>
             {% else %}
-            <span class="label alert"><i class="fa-solid fa-circle-pause"></i> Paused</span>
+            <span class="v2-status {{ site.display_status }}">
+              {% if site.display_status == 'active' %}
+              <i class="fa-solid fa-circle-check"></i> Active
+              {% elif site.display_status == 'partial' %}
+              <i class="fa-solid fa-circle-half-stroke"></i> Partial
+              {% elif site.display_status == 'missing' %}
+              <i class="fa-solid fa-triangle-exclamation"></i> Missing
+              {% else %}
+              <i class="fa-solid fa-circle-pause"></i> Paused
+              {% endif %}
+            </span>
             {% endif %}
-            {% if site.status_stale %}
-            <div style="font-size:0.72rem;color:#6b7280;margin-top:0.25rem">stale · {{ site.last_checked_at_display or 'never' }}</div>
-            {% else %}
-            <div style="font-size:0.72rem;color:#6b7280;margin-top:0.25rem">{{ site.last_checked_at_display or 'never' }}</div>
-            {% endif %}
-          </td>
-          <td>
-            <div class="action-group">
-              <form method="post" action="/sites/{{ site.id }}/toggle">
-                {% if site.enabled %}
-                <button class="button tiny secondary" type="submit">
-                  <i class="fa-solid fa-pause"></i> Pause
-                </button>
-                {% else %}
-                <button class="button tiny success" type="submit">
-                  <i class="fa-solid fa-play"></i> Enable
-                </button>
-                {% endif %}
-              </form>
-              <button class="button tiny warning" onclick="startRediscover({{ site.id }}, this)">
-                <i class="fa-solid fa-rotate"></i> Rediscover
-              </button>
-              <form method="post" action="/sites/{{ site.id }}/delete"
-                    onsubmit="return confirm('Delete site and withdraw all routes?')">
-                <button class="button tiny alert hollow" type="submit">
-                  <i class="fa-solid fa-trash"></i>
-                </button>
-              </form>
+            <div style="font-size:11px;color:var(--text-subtle);margin-top:3px">
+              {% if site.status_stale %}stale · {% endif %}{{ site.last_checked_at_display or 'never' }}
             </div>
-            {% if site.supports_auto_rediscover %}
-            <form method="post" action="/sites/{{ site.id }}/auto-rediscover" style="margin-top:0.45rem">
-              <label style="display:inline-flex;align-items:center;gap:0.35rem;font-size:0.76rem;color:#374151;cursor:pointer">
-                <input type="checkbox" name="enabled" value="on"
-                       {% if site.auto_rediscover_enabled %}checked{% endif %}
-                       onchange="this.form.submit()">
-                Refresh discover
-              </label>
-            </form>
-            {% else %}
-            <div style="margin-top:0.45rem;font-size:0.76rem;color:#9ca3af">manual site</div>
-            {% endif %}
+          </td>
+          <td class="v2-td" style="text-align:right" onclick="event.stopPropagation()">
+            <div class="row-actions" style="display:inline-flex;gap:4px;opacity:0.4;transition:opacity .15s">
+              <form method="post" action="/sites/{{ site.id }}/toggle" style="display:inline">
+                <button type="submit" class="v2-btn v2-btn-sm {% if site.enabled %}v2-btn-ghost{% else %}v2-btn-success{% endif %}"
+                        title="{% if site.enabled %}Pause{% else %}Enable{% endif %}">
+                  <i class="fa-solid {% if site.enabled %}fa-pause{% else %}fa-play{% endif %}"></i>
+                </button>
+              </form>
+              <button class="v2-btn v2-btn-sm v2-btn-warning" onclick="startRediscover({{ site.id }},this);event.stopPropagation()"
+                      title="Rediscover">
+                <i class="fa-solid fa-rotate"></i>
+              </button>
+              <a href="/sites/{{ site.id }}" class="v2-btn v2-btn-sm v2-btn-ghost" title="Open detail">
+                <i class="fa-solid fa-ellipsis"></i>
+              </a>
+            </div>
           </td>
         </tr>
         <tr id="site-prefixes-{{ site.id }}" class="site-prefixes-row hidden">
-          <td colspan="7">
-            {% if active_prefixes %}
-            <div class="prefixes-wrap" style="padding:0.5rem 0">
-              <strong style="font-size:0.85rem;color:#374151">
-                <i class="fa-solid fa-list"></i> Active prefixes
-              </strong>
-              <div style="display:flex;flex-wrap:wrap;gap:0.4rem;margin-top:0.4rem">
-                {% for p in active_prefixes | sort(attribute='cidr') %}
-                <span style="display:inline-flex;align-items:center;gap:0.3rem;background:#f0f4ff;border:1px solid #c7d2fe;border-radius:5px;padding:0.2rem 0.55rem;font-size:0.82rem">
-                  <code style="background:none;border:none;padding:0;color:#1e40af">{{ p.cidr }}</code>
-                  <span class="label {% if p.source == 'discovery' %}primary{% else %}secondary{% endif %}" style="margin:0">{{ p.source }}</span>
-                </span>
-                {% endfor %}
+          <td colspan="7" style="padding:14px 20px 18px 60px;border-bottom:1px solid var(--border-soft)">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px">
+              <div>
+                <div class="v2-detail-block-title">
+                  <i class="fa-solid fa-list"></i> Active prefixes
+                </div>
+                {% if active_prefixes %}
+                <div style="display:flex;flex-wrap:wrap;gap:5px">
+                  {% for p in active_prefixes | sort(attribute='cidr') %}
+                  <span style="display:inline-flex;align-items:center;gap:4px;background:var(--brand-bg);color:var(--brand-text);padding:2px 7px;border-radius:4px;font-size:11.5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace">
+                    {{ p.cidr }}
+                    <span style="font-size:10px;font-weight:600;background:{% if p.source=='discovery' %}var(--brand-bg){% else %}var(--surface-2){% endif %};color:{% if p.source=='discovery' %}var(--brand-text){% else %}var(--text-muted){% endif %};padding:1px 4px;border-radius:3px;border:1px solid var(--border-soft)">{{ p.source }}</span>
+                  </span>
+                  {% endfor %}
+                </div>
+                {% else %}
+                <span style="font-size:12px;color:var(--text-muted)">No active prefixes.</span>
+                {% endif %}
+              </div>
+              <div>
+                <div class="v2-detail-block-title">
+                  <i class="fa-solid fa-clock-rotate-left"></i> Last checked
+                </div>
+                <code style="font-size:12px;color:var(--text);font-family:ui-monospace,SFMono-Regular,Menlo,monospace">{{ site.last_checked_at_display or 'never' }}</code>
+                <div style="font-size:11.5px;color:var(--text-muted);margin-top:4px">
+                  {% if site.supports_auto_rediscover and site.auto_rediscover_enabled %}↻ refreshing every hour{% else %}manual refresh only{% endif %}
+                </div>
+              </div>
+              <div>
+                <div class="v2-detail-block-title">
+                  <i class="fa-solid fa-bolt"></i> Quick actions
+                </div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                  <a href="/sites/{{ site.id }}" class="v2-btn v2-btn-sm v2-btn-ghost">
+                    <i class="fa-solid fa-link"></i> Open detail
+                  </a>
+                  <button class="v2-btn v2-btn-sm v2-btn-warning" onclick="startRediscover({{ site.id }},this)">
+                    <i class="fa-solid fa-rotate"></i> Rediscover
+                  </button>
+                  <form method="post" action="/sites/{{ site.id }}/delete" style="display:inline"
+                        onsubmit="return confirm('Delete site and withdraw all routes?')">
+                    <button type="submit" class="v2-btn v2-btn-sm v2-btn-danger">
+                      <i class="fa-solid fa-trash"></i> Delete
+                    </button>
+                  </form>
+                </div>
               </div>
             </div>
-            {% else %}
-            <span class="subtle"><i class="fa-solid fa-circle-info"></i> No active prefixes for this site.</span>
-            {% endif %}
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-    {% endif %}
   </div>
-
+  {% endif %}
 </div>
+
+<!-- Add Site Modal -->
+<div id="add-site-modal" class="v2-modal-overlay hidden">
+  <div class="v2-modal">
+    <div class="v2-modal-header">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <h3>New site</h3>
+          <p>Configure routes for a domain or manual group</p>
+        </div>
+        <button onclick="document.getElementById('add-site-modal').classList.add('hidden')"
+                style="background:transparent;border:none;color:var(--text-muted);cursor:pointer;font-size:16px">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+    </div>
+    <div class="v2-modal-body">
+      <form id="add-site-form" method="post" action="/sites">
+        <input type="hidden" name="site_type" id="site-type-input" value="domain" />
+
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <button type="button" id="btn-domain" class="v2-btn v2-btn-accent" onclick="setSiteType('domain')">
+            <i class="fa-solid fa-globe"></i> By Domain
+          </button>
+          <button type="button" id="btn-manual" class="v2-btn v2-btn-ghost" onclick="setSiteType('manual')">
+            <i class="fa-solid fa-pen-to-square"></i> Manual Group
+          </button>
+        </div>
+
+        <div class="v2-field">
+          <label id="domain-label">Domain</label>
+          <input type="text" name="domain" id="domain-input" class="v2-input"
+                 placeholder="youtube.com" required autocomplete="off" />
+        </div>
+
+        <div class="v2-field">
+          <label>Next hop</label>
+          <select name="next_hop_id" class="v2-select" required>
+            {% for hop in next_hops %}
+            <option value="{{ hop.id }}">{{ hop.ip }}{% if hop.name %} — {{ hop.name }}{% endif %}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="v2-field">
+          <label>Tags <span class="hint">optional</span></label>
+          <input type="text" name="tags" id="new-site-tags-input" class="v2-input" placeholder="video, streaming" autocomplete="off" list="all-tag-options" />
+          {% if all_tags %}
+          <div class="v2-tag-picker">
+            <div class="v2-tag-picker-label">Existing tags</div>
+            <div class="v2-tag-picker-tags">
+              {% for tag in all_tags %}
+              <button type="button" class="v2-tag v2-tag-option" onclick="window.addTagToInput('new-site-tags-input', {{ tag|tojson }})">{{ tag }}</button>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+        </div>
+
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-muted);cursor:pointer">
+            <input type="checkbox" name="enabled" checked style="accent-color:var(--brand)"> Enabled on create
+          </label>
+          <label id="discover-label" style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-muted);cursor:pointer">
+            <input type="checkbox" name="discover" id="discover-checkbox" checked style="accent-color:var(--brand)"> Auto-discover prefixes
+          </label>
+        </div>
+
+        {% if not next_hops %}
+        <div style="padding:10px 12px;background:var(--warn-soft);border:1px solid var(--warn-border);border-radius:8px;color:var(--warn-text);font-size:12px;margin-bottom:12px">
+          <i class="fa-solid fa-triangle-exclamation"></i>
+          No next hops. <a href="/next-hops" style="color:var(--warn-text);text-decoration:underline">Add one first.</a>
+        </div>
+        {% endif %}
+      </form>
+    </div>
+    <div class="v2-modal-footer">
+      <button type="button" class="v2-btn v2-btn-ghost" onclick="document.getElementById('add-site-modal').classList.add('hidden')">Cancel</button>
+      <button type="submit" form="add-site-form" class="v2-btn v2-btn-accent">
+        <i class="fa-solid fa-plus"></i> Create site
+      </button>
+    </div>
+  </div>
+</div>
+
 <script>
-async function cancelJobFromSites(jobId, btn) {
-  btn.disabled = true;
-  try { await fetch('/jobs/' + jobId + '/cancel', { method: 'POST' }); } catch (_) {}
-}
+  /* ── Site type toggle ─────────────────────────────────────── */
+  function setSiteType(type) {
+    const isManual = type === 'manual';
+    document.getElementById('site-type-input').value = isManual ? 'manual' : 'discovery';
+    const lbl = document.getElementById('domain-label');
+    const inp = document.getElementById('domain-input');
+    lbl.textContent = isManual ? 'Name' : 'Domain';
+    inp.placeholder = isManual ? 'Internal DC-1 routes' : 'youtube.com';
+    const discoverLabel = document.getElementById('discover-label');
+    const discoverCb = document.getElementById('discover-checkbox');
+    discoverLabel.style.display = isManual ? 'none' : '';
+    discoverCb.disabled = isManual;
+    if (isManual) discoverCb.checked = false;
+    else discoverCb.checked = true;
+    document.getElementById('btn-domain').className = isManual ? 'v2-btn v2-btn-ghost' : 'v2-btn v2-btn-accent';
+    document.getElementById('btn-manual').className = isManual ? 'v2-btn v2-btn-accent' : 'v2-btn v2-btn-ghost';
+  }
 
-function pollRediscoverJob(siteId, jobId, lastId) {
-  const statusCell = document.getElementById('status-cell-' + siteId);
-  const timer = setInterval(async () => {
-    try {
-      const r = await fetch('/jobs/' + jobId + '?after=' + lastId);
-      const d = await r.json();
-      if (d.logs && d.logs.length) {
-        lastId = d.logs[d.logs.length - 1].id;
-        const lastMsg = d.logs[d.logs.length - 1].message;
-        if (statusCell) {
-          statusCell.innerHTML =
-            '<span class="label warning"><i class="fa-solid fa-spinner fa-spin"></i> Rediscovering…</span>' +
-            ' <button class="button tiny alert hollow" style="margin:0 0 0 0.3rem;padding:0.2rem 0.4rem" onclick="cancelJobFromSites(' + jobId + ',this)" title="Stop job"><i class="fa-solid fa-stop"></i></button>' +
-            '<div style="font-size:0.75rem;color:#6b7280;margin-top:0.25rem;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' +
-            lastMsg.replace(/"/g, '&quot;') + '">' + lastMsg + '</div>';
+  /* ── Expandable rows ────────────────────────────────────── */
+  function toggleExpand(siteId) {
+    const row = document.getElementById('site-prefixes-' + siteId);
+    const chevron = document.getElementById('chevron-' + siteId);
+    if (row.classList.contains('hidden')) {
+      row.classList.remove('hidden');
+      chevron.style.transform = 'rotate(90deg)';
+    } else {
+      row.classList.add('hidden');
+      chevron.style.transform = 'rotate(0deg)';
+    }
+  }
+
+  /* ── Click on row expands ───────────────────────────────── */
+  document.querySelectorAll('.site-row').forEach(row => {
+    row.addEventListener('click', (event) => {
+      if (event.target.closest('form,button,a,input,select,label,.row-actions')) return;
+      const id = row.dataset.id;
+      if (id) toggleExpand(id);
+    });
+  });
+
+  /* ── Rediscover ─────────────────────────────────────────── */
+  async function cancelJobFromSites(jobId, btn) {
+    btn.disabled = true;
+    try { await fetch('/jobs/' + jobId + '/cancel', { method: 'POST' }); } catch (_) {}
+  }
+
+  function pollRediscoverJob(siteId, jobId, lastId) {
+    const statusCell = document.getElementById('status-cell-' + siteId);
+    const timer = setInterval(async () => {
+      try {
+        const r = await fetch('/jobs/' + jobId + '?after=' + lastId);
+        const d = await r.json();
+        if (d.logs && d.logs.length) {
+          lastId = d.logs[d.logs.length - 1].id;
+          const lastMsg = d.logs[d.logs.length - 1].message;
+          if (statusCell) {
+            statusCell.innerHTML =
+              '<span class="v2-status running"><i class="fa-solid fa-spinner fa-spin"></i> Rediscovering…</span>' +
+              ' <button class="v2-btn v2-btn-sm v2-btn-danger" style="margin-left:6px" onclick="cancelJobFromSites(' + jobId + ',this)" title="Stop job"><i class="fa-solid fa-stop"></i></button>' +
+              '<div style="font-size:11px;color:var(--text-subtle);margin-top:3px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + lastMsg.replace(/"/g, '&quot;') + '">' + lastMsg + '</div>';
+          }
         }
-      }
-      if (d.status !== 'pending' && d.status !== 'running') {
-        clearInterval(timer);
-        window.location.reload();
-      }
-    } catch (_) {}
-  }, 3000);
-}
+        if (d.status !== 'pending' && d.status !== 'running') {
+          clearInterval(timer);
+          window.location.reload();
+        }
+      } catch (_) {}
+    }, 3000);
+  }
 
-async function startRediscover(siteId, btn) {
-  btn.disabled = true;
-  btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
-  const statusCell = document.getElementById('status-cell-' + siteId);
-  if (statusCell) {
-    statusCell.innerHTML = '<span class="label warning"><i class="fa-solid fa-spinner fa-spin"></i> Rediscovering…</span>';
+  async function startRediscover(siteId, btn) {
+    btn.disabled = true;
+    if (btn.querySelector('i')) btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i>';
+    const statusCell = document.getElementById('status-cell-' + siteId);
+    if (statusCell) {
+      statusCell.innerHTML = '<span class="v2-status running"><i class="fa-solid fa-spinner fa-spin"></i> Rediscovering…</span>';
+    }
+    try {
+      const resp = await fetch('/sites/' + siteId + '/rediscover', { method: 'POST' });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      window.open('/logs/' + data.job_id, '_blank');
+      pollRediscoverJob(siteId, data.job_id, 0);
+    } catch (e) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="fa-solid fa-rotate"></i>';
+      if (statusCell) statusCell.innerHTML = '<span class="v2-status failed"><i class="fa-solid fa-circle-xmark"></i> Error</span>';
+      alert('Rediscover failed: ' + e.message);
+    }
   }
-  try {
-    const resp = await fetch('/sites/' + siteId + '/rediscover', { method: 'POST' });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const data = await resp.json();
-    window.open('/logs/' + data.job_id, '_blank');
-    pollRediscoverJob(siteId, data.job_id, 0);
-  } catch (e) {
-    btn.disabled = false;
-    btn.innerHTML = '<i class="fa-solid fa-rotate"></i> Rediscover';
-    if (statusCell) statusCell.innerHTML = '<span class="label alert"><i class="fa-solid fa-circle-xmark"></i> Error</span>';
-    alert('Rediscover failed: ' + e.message);
-  }
-}
 
   // Resume polling for jobs that were already running when the page loaded
   const activeJobs = {{ active_job_by_site | tojson }};
@@ -318,29 +521,104 @@ async function startRediscover(siteId, btn) {
     pollRediscoverJob(parseInt(siteId), jobId, 0);
   });
 
-  document.querySelectorAll(".site-row").forEach((row) => {
-    row.addEventListener("click", (event) => {
-      if (event.target.closest("form,button,a,input,select,label")) return;
-      const targetId = row.dataset.target;
-      if (!targetId) return;
-      const details = document.getElementById(targetId);
-      if (!details) return;
-      details.classList.toggle("hidden");
-    });
-  });
+  /* ── URL-based filters ──────────────────────────────────── */
+  const urlParams = new URLSearchParams(window.location.search);
+  let activeFilters = {};
+  urlParams.forEach((v, k) => { if (v) activeFilters[k] = v; });
 
-  /* ── Bulk selection & filtering ─────────────────────────────── */
+  function updateFilterBar() {
+    const bar = document.getElementById('filter-bar');
+    const chips = document.getElementById('filter-chips');
+    chips.innerHTML = '';
+    let hasAny = false;
+    Object.entries(activeFilters).forEach(([k, v]) => {
+      hasAny = true;
+      const chip = document.createElement('span');
+      chip.className = 'v2-filter-chip';
+      chip.innerHTML = v + '<button onclick="removeFilter(\'' + k + '\')"><i class="fa-solid fa-xmark" style="font-size:9px"></i></button>';
+      chips.appendChild(chip);
+    });
+    bar.classList.toggle('hidden', !hasAny);
+  }
+
+  function setFilter(key, value) {
+    if (activeFilters[key] === value) {
+      delete activeFilters[key];
+    } else {
+      activeFilters[key] = value;
+    }
+    const usp = new URLSearchParams(activeFilters);
+    const qs = usp.toString();
+    window.history.replaceState({}, '', qs ? '?' + qs : window.location.pathname);
+    applyFilters();
+    updateFilterBar();
+  }
+
+  function removeFilter(key) {
+    delete activeFilters[key];
+    const usp = new URLSearchParams(activeFilters);
+    const qs = usp.toString();
+    window.history.replaceState({}, '', qs ? '?' + qs : window.location.pathname);
+    applyFilters();
+    updateFilterBar();
+  }
+
+  function clearAllFilters() {
+    activeFilters = {};
+    window.history.replaceState({}, '', window.location.pathname);
+    applyFilters();
+    updateFilterBar();
+    document.querySelectorAll('.sidebar-filter').forEach(el => {
+      el.classList.remove('active');
+      el.style.background = 'transparent';
+      el.style.color = 'var(--text-muted)';
+      el.style.fontWeight = '500';
+    });
+    document.querySelectorAll('.v2-tag').forEach(el => el.classList.remove('active'));
+  }
+
+  /* ── Client-side filtering ──────────────────────────────── */
+  const searchInput = document.getElementById('search-input');
+
+  function applyFilters() {
+    const search = searchInput.value.toLowerCase();
+    const status = activeFilters.status || '';
+    const hop = activeFilters.hop || '';
+    const tag = activeFilters.tag || '';
+
+    document.querySelectorAll('.site-row').forEach(row => {
+      let visible = true;
+      if (search && !row.dataset.domain.toLowerCase().includes(search)) visible = false;
+      if (status && row.dataset.status !== status) visible = false;
+      if (hop && row.dataset.nextHop !== hop) visible = false;
+      if (tag && !(row.dataset.tags || '').split(', ').includes(tag)) visible = false;
+
+      row.style.display = visible ? '' : 'none';
+      const prefixesRow = document.getElementById(row.dataset.target);
+      if (prefixesRow) prefixesRow.style.display = visible ? '' : 'none';
+    });
+
+    // Reset select-all when filtering
+    const selectAll = document.getElementById('select-all');
+    if (selectAll) selectAll.checked = false;
+    document.querySelectorAll('.site-checkbox').forEach(cb => {
+      const row = cb.closest('.site-row');
+      cb.checked = false;
+      cb.disabled = row.style.display === 'none';
+    });
+    updateBulkRibbon();
+  }
+
+  /* ── Bulk selection ───────────────────────────────────── */
   const selectAll = document.getElementById('select-all');
   const checkboxes = document.querySelectorAll('.site-checkbox');
-  const bulkBar = document.getElementById('bulk-bar');
+  const bulkRibbon = document.getElementById('bulk-ribbon');
   const bulkCount = document.getElementById('bulk-count');
-  const filterNextHop = document.getElementById('filter-next-hop');
-  const filterTag = document.getElementById('filter-tag');
 
-  function updateBulkBar() {
+  function updateBulkRibbon() {
     const selected = Array.from(checkboxes).filter(cb => cb.checked);
     bulkCount.textContent = selected.length;
-    bulkBar.classList.toggle('hidden', selected.length === 0);
+    bulkRibbon.classList.toggle('hidden', selected.length === 0);
 
     // Clear previous hidden inputs
     document.querySelectorAll('.bulk-form input[type="hidden"]').forEach(el => el.remove());
@@ -357,44 +635,29 @@ async function startRediscover(siteId, btn) {
     });
   }
 
-  function applyFilters() {
-    const hop = filterNextHop.value;
-    const tag = filterTag.value;
-    document.querySelectorAll('.site-row').forEach(row => {
-      let visible = true;
-      if (hop && row.dataset.nextHop !== hop) visible = false;
-      if (tag && !(row.dataset.tags || '').split(', ').includes(tag)) visible = false;
-      row.style.display = visible ? '' : 'none';
-      // Also hide the prefixes row
-      const prefixesRow = document.getElementById(row.dataset.target);
-      if (prefixesRow) prefixesRow.style.display = visible ? '' : 'none';
-    });
-    // Reset select-all when filtering
-    selectAll.checked = false;
-    checkboxes.forEach(cb => {
-      const row = cb.closest('.site-row');
-      cb.checked = false;
-      cb.disabled = row.style.display === 'none';
-    });
-    updateBulkBar();
+  function clearSelection() {
+    document.querySelectorAll('.site-checkbox').forEach(cb => cb.checked = false);
+    document.getElementById('select-all').checked = false;
+    updateBulkRibbon();
   }
 
-  selectAll.addEventListener('change', () => {
-    checkboxes.forEach(cb => {
-      const row = cb.closest('.site-row');
-      if (row.style.display !== 'none') {
-        cb.checked = selectAll.checked;
-      }
+  if (selectAll) {
+    selectAll.addEventListener('change', () => {
+      checkboxes.forEach(cb => {
+        const row = cb.closest('.site-row');
+        if (row.style.display !== 'none') {
+          cb.checked = selectAll.checked;
+        }
+      });
+      updateBulkRibbon();
     });
-    updateBulkBar();
-  });
+  }
 
   checkboxes.forEach(cb => {
-    cb.addEventListener('change', updateBulkBar);
+    cb.addEventListener('change', updateBulkRibbon);
   });
 
-  filterNextHop.addEventListener('change', applyFilters);
-  filterTag.addEventListener('change', applyFilters);
+  // Init
+  updateFilterBar();
 </script>
 {% endblock %}
-

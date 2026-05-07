@@ -6,6 +6,9 @@ MAINTENANCE_STATUS_KEY = "maintenance_status"
 IPV6_ENABLED_KEY = "ipv6_enabled"
 AUTO_REDISCOVER_ALL_KEY = "auto_rediscover_all_enabled"
 CONFIGURATION_STATUS_KEY = "configuration_status"
+THEME_SCHEDULE_ENABLED_KEY = "theme_schedule_enabled"
+THEME_DARK_START_KEY = "theme_dark_start"
+THEME_DARK_END_KEY = "theme_dark_end"
 
 STATUS_REFRESH_INTERVAL_SECONDS = max(int(os.getenv("STATUS_REFRESH_INTERVAL_SECONDS", "3600")), 0)
 STATUS_STALE_AFTER_SECONDS = max(int(os.getenv("STATUS_STALE_AFTER_SECONDS", "5400")), 60)
