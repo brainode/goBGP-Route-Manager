@@ -53,17 +53,30 @@ Both images support `amd64` and `arm64`.
 ## Code Architecture
 
 ```
-app/main.py          # FastAPI app, all route handlers, background sync logic
-app/gobgp_client.py  # GoBGPClient: gRPC-first, CLI fallback, stable add/del/list/status API
-app/discovery.py     # Domain → DNS → IP → ASN → prefix pipeline; multi-provider fallback
-app/models.py        # SQLAlchemy ORM: Site, NextHop, Prefix, Setting, Job, JobLog
-app/database.py      # Engine, SessionLocal, get_db() for FastAPI DI; enables SQLite FK pragma
-app/templates/       # Jinja2 server-rendered HTML (Foundation CSS)
-app/gobgp_api/       # Third-party goBGP protobuf generated files (MIT licensed)
-gobgp/gobgpd.toml    # goBGP daemon config (ASN, router-id, peers)
+app/main.py               # FastAPI app factory, lifespan, router mounting
+app/routers/              # FastAPI route handlers (sites, next_hops, settings, logs, health)
+app/services/             # Business logic layer (site_service, route_service, rediscover_service, settings_service, status_service, job_service)
+app/gobgp_client.py       # GoBGPClient: gRPC-first, CLI fallback, stable add/del/list/status API
+app/discovery.py          # Domain → DNS → IP → ASN → prefix pipeline; multi-provider fallback
+app/models.py             # SQLAlchemy ORM: Site, NextHop, Prefix, Setting, Job, JobLog
+app/database.py           # Engine, SessionLocal, get_db() for FastAPI DI; enables SQLite FK pragma
+app/templates/            # Jinja2 server-rendered HTML (Foundation CSS)
+app/static/               # Custom CSS and assets
+app/gobgp_api/            # Third-party goBGP protobuf generated files (MIT licensed)
+gobgp/gobgpd.toml         # goBGP daemon config (ASN, router-id, peers)
 ```
 
 `app/routes.py` is a leftover Flask prototype — it is **not** used by the running application.
+
+### Router Modules
+
+Route handlers are split into dedicated router modules under `app/routers/`:
+
+- `sites.py` — site CRUD, toggle, rediscover, prefix add/delete, **bulk next-hop change**, **bulk tag operations**, **tag editing**
+- `next_hops.py` — next-hop CRUD
+- `settings.py` — settings page, discovery mode, import/export, purge, apply-current, rediscover-all
+- `logs.py` — job log viewer
+- `health.py` — health checks
 
 ### Key Architectural Patterns
 
@@ -73,7 +86,7 @@ gobgp/gobgpd.toml    # goBGP daemon config (ASN, router-id, peers)
 
 **Site is the aggregate root** — `Prefix` rows are children of `Site` and are cascade-deleted with it. `NextHop` is a shared lookup entity referenced by many sites.
 
-**Background sync via FastAPI `BackgroundTasks`** — route apply/withdraw runs in background threads via `_sync_site_by_id(site_id)`. Not durable — if the process dies, pending sync is lost.
+**Background sync via FastAPI `BackgroundTasks`** — route apply/withdraw runs in background threads via `site_service.sync_site_by_id(site_id)`. Not durable — if the process dies, pending sync is lost.
 
 **`Job` / `JobLog` tables** — longer operations (rediscover, rediscover-all, apply-current) are tracked as `Job` rows. `LoggingList` in `main.py` writes each log entry to `job_logs` immediately on `append()`.
 
@@ -82,8 +95,25 @@ gobgp/gobgpd.toml    # goBGP daemon config (ASN, router-id, peers)
 ### Data Flow: Site Enable/Disable Toggle
 
 1. `POST /sites/{site_id}/toggle` flips `site.enabled` in SQLite
-2. Schedules `_sync_site_by_id(site.id)` as a background task
-3. `_sync_site()` iterates all active prefixes and calls `GoBGPClient.add_route()` or `del_route()` for each
+2. Schedules `site_service.sync_site_by_id(site.id)` as a background task
+3. `sync_site()` iterates all active prefixes and calls `GoBGPClient.add_route()` or `del_route()` for each
+
+### Data Flow: Bulk Change Next Hop
+
+1. User selects sites via checkboxes on `/sites` and chooses a new next hop from the bulk action bar
+2. `POST /sites/bulk-change-next-hop` receives `site_ids` and `next_hop_id`
+3. A background task calls `site_service.bulk_change_next_hop(site_ids, next_hop_id)`
+4. For each site, `change_site_next_hop()` withdraws active prefixes via the **old** next-hop, updates `site.next_hop_id`, and re-announces prefixes via the **new** next-hop
+5. Tags and other site attributes are preserved during the move
+
+### Tags
+
+Sites support optional comma-separated tags (`"video,streaming"`). Tags are set:
+- At site creation via the `tags` form field
+- In bulk via `POST /sites/bulk-add-tags` (merge) and `POST /sites/bulk-set-tags` (replace)
+- Per-site via `POST /sites/{site_id}/tags` on the detail page
+
+Tags are exported and imported with the full configuration JSON (`/settings/export`, `/settings/import`).
 
 ### Discovery Source Tracking
 
@@ -98,6 +128,7 @@ Copy `.env.example` to `.env`. Critical ones:
 | `GOBGP_ENABLED` | `false` | Set `true` to actually push routes |
 | `GOBGP_HOST` | `gobgp` | DNS name or IP of the goBGP daemon |
 | `GOBGP_USE_GRPC` | `true` | `false` in dev/prod compose overrides |
+| `ROUTE_APPLY_WORKERS` | `8` | Thread-pool max workers for background route sync |
 | `IPINFO_TOKEN` | empty | Optional — needed for higher rate limits |
 | `DB_HOST_DIR` | `./data` | Must exist before starting containers |
 

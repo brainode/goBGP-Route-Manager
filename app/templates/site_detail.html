@@ -45,6 +45,23 @@
           <strong>Next hop:</strong> <code>{{ site.next_hop.ip }}</code>
           {% if site.next_hop.name %}<span class="subtle">— {{ site.next_hop.name }}</span>{% endif %}
         </p>
+        <p style="margin:0.5rem 0 0.15rem;font-size:0.88rem;color:#374151">
+          <i class="fa-solid fa-tags" style="color:var(--muted);width:16px"></i>
+          <strong>Tags:</strong>
+          {% if site.tags %}
+            {% for tag in site.tags.split(', ') %}
+            <span class="tag-badge">{{ tag }}</span>
+            {% endfor %}
+          {% else %}
+          <span class="subtle">—</span>
+          {% endif %}
+        </p>
+        <form method="post" action="/sites/{{ site.id }}/tags" style="margin:0.55rem 0 0">
+          <label style="display:inline-flex;align-items:center;gap:0.4rem;font-size:0.86rem;color:#374151;cursor:pointer">
+            <input type="text" name="tags" value="{{ site.tags or '' }}" placeholder="video, streaming" style="margin:0;font-size:0.8rem" />
+            <button class="button tiny" type="submit">Update</button>
+          </label>
+        </form>
         {% if site.supports_auto_rediscover %}
         <form method="post" action="/sites/{{ site.id }}/auto-rediscover" style="margin:0.55rem 0 0">
           <label style="display:inline-flex;align-items:center;gap:0.4rem;font-size:0.86rem;color:#374151;cursor:pointer">

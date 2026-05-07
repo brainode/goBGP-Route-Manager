@@ -105,6 +105,7 @@ def serialize_configuration(db: Session) -> dict[str, object]:
                 "auto_rediscover_enabled": bool(
                     site.auto_rediscover_enabled and not site.is_manual
                 ),
+                "tags": site.tags,
                 "next_hop_ip": site.next_hop.ip,
                 "prefixes": [
                     {
@@ -180,6 +181,8 @@ def import_configuration(db: Session, payload: dict[str, object]) -> dict[str, i
         row.auto_rediscover_enabled = (
             bool(item.get("auto_rediscover_enabled", False)) if not is_manual else False
         )
+        tags_raw = str(item.get("tags", "")).strip()
+        row.tags = tags_raw or None
         row.next_hop_id = next_hops_by_ip[next_hop_ip].id
         stats["sites_created" if created else "sites_updated"] += 1
 

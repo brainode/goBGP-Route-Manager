@@ -15,8 +15,9 @@ from ..config import (
     STATUS_STALE_AFTER_SECONDS,
 )
 from ..database import SessionLocal
-from ..models import Prefix, Site
+from ..models import NextHop, Prefix, Site
 from . import route_service, settings_service
+from .. import state as _state
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -149,3 +150,59 @@ def sync_site_by_id(site_id: int) -> None:
 
     from . import status_service
     status_service.refresh_gobgp_state(f"sync_site:{site_id}")
+
+
+def change_site_next_hop(db: Session, site: Site, new_next_hop_id: int) -> bool:
+    if site.next_hop_id == new_next_hop_id:
+        return True
+
+    old_next_hop_ip = site.next_hop.ip
+    ipv6_enabled = settings_service.get_ipv6_enabled(db)
+
+    if site.enabled:
+        for prefix in site.prefixes:
+            if not route_service.prefix_desired_for_apply(prefix, ipv6_enabled):
+                continue
+            _state.gobgp.del_route(prefix.cidr, old_next_hop_ip)
+
+    site.next_hop_id = new_next_hop_id
+    db.commit()
+    db.refresh(site)
+    site.next_hop = db.query(NextHop).filter(NextHop.id == new_next_hop_id).first()
+
+    if site.enabled:
+        for prefix in site.prefixes:
+            if not route_service.prefix_desired_for_apply(prefix, ipv6_enabled):
+                continue
+            route_service.apply_prefix(db, site, prefix, announce=True)
+
+    logger.info(
+        "changed next_hop site_id=%s domain=%s old=%s new=%s",
+        site.id, site.domain, old_next_hop_ip, site.next_hop.ip,
+    )
+    return True
+
+
+def bulk_change_next_hop(site_ids: list[int], next_hop_id: int) -> dict[str, int]:
+    db = SessionLocal()
+    try:
+        sites = (
+            db.query(Site)
+            .options(joinedload(Site.next_hop), joinedload(Site.prefixes))
+            .filter(Site.id.in_(site_ids))
+            .all()
+        )
+        changed = 0
+        failed = 0
+        for site in sites:
+            try:
+                if change_site_next_hop(db, site, next_hop_id):
+                    changed += 1
+            except Exception:
+                logger.exception("change next hop failed site_id=%s", site.id)
+                failed += 1
+        from . import status_service
+        status_service.refresh_gobgp_state("bulk_change_next_hop")
+        return {"changed": changed, "failed": failed, "total": len(sites)}
+    finally:
+        db.close()

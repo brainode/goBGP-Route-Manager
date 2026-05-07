@@ -27,6 +27,8 @@ def _ensure_runtime_schema() -> None:
             conn.exec_driver_sql("ALTER TABLE sites ADD COLUMN is_manual BOOLEAN NOT NULL DEFAULT 0")
         if "auto_rediscover_enabled" not in site_cols:
             conn.exec_driver_sql("ALTER TABLE sites ADD COLUMN auto_rediscover_enabled BOOLEAN NOT NULL DEFAULT 0")
+        if "tags" not in site_cols:
+            conn.exec_driver_sql("ALTER TABLE sites ADD COLUMN tags TEXT NULL")
 
 
 @asynccontextmanager
