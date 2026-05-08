@@ -1,77 +1,191 @@
 <!-- SPDX-License-Identifier: GPL-2.0-only -->
 {% extends "base.html" %}
 {% block content %}
-<div class="grid-x grid-margin-x">
 
-  {# ── Add Next Hop form ─────────────────────────────────────── #}
-  <div class="cell large-4">
-    <div class="card">
-      <div class="card-divider"><i class="fa-solid fa-plus"></i> Add Next Hop</div>
-      <div class="card-section">
-        <form method="post" action="/next-hops">
-          <label>IP Address
-            <input type="text" name="ip" placeholder="10.10.24.2" required autocomplete="off" />
-          </label>
-          <label>Name <span class="subtle">(optional)</span>
-            <input type="text" name="name" placeholder="Core router" />
-          </label>
-          <button class="button success expanded" type="submit">
-            <i class="fa-solid fa-plus"></i> Create Next Hop
-          </button>
-        </form>
-      </div>
-    </div>
-    <div class="callout secondary" style="font-size:0.84rem;margin-top:0.6rem">
-      <i class="fa-solid fa-circle-info"></i>
-      <strong>Next hops</strong> are the BGP next-hop IPs used when announcing routes. Each site needs exactly one.
+<!-- Page Header -->
+<div class="v2-page-header">
+  <div>
+    <h1>Next hops</h1>
+    <p>BGP next-hop IPs used when announcing routes</p>
+  </div>
+  <div class="v2-page-header-right">
+    <button class="v2-btn v2-btn-accent" onclick="document.getElementById('add-hop-modal').classList.remove('hidden')">
+      <i class="fa-solid fa-plus"></i> New next hop
+    </button>
+  </div>
+</div>
+
+<!-- Stats -->
+{% set total_sites = next_hops | sum(attribute='sites', start=[]) | length %}
+<div class="v2-stat-grid">
+  <div class="v2-stat">
+    <div class="v2-stat-label"><i class="fa-solid fa-arrows-left-right"></i> Next hops</div>
+    <div class="v2-stat-value">{{ next_hops|length }}</div>
+  </div>
+  <div class="v2-stat">
+    <div class="v2-stat-label"><i class="fa-solid fa-layer-group"></i> Sites using</div>
+    <div class="v2-stat-value">{{ total_sites }}</div>
+  </div>
+  <div class="v2-stat">
+    <div class="v2-stat-label"><i class="fa-solid fa-wifi"></i> Routers reachable</div>
+    <div class="v2-stat-value">{{ reachable_count }}</div>
+    <div class="v2-stat-hint {% if reachable_count == next_hops|length %}ok{% else %}bad{% endif %}">
+      {% if reachable_count == next_hops|length %}ICMP ok{% else %}some unreachable{% endif %}
     </div>
   </div>
+  <div class="v2-stat">
+    <div class="v2-stat-label"><i class="fa-solid fa-chart-simple"></i> Avg sites / hop</div>
+    <div class="v2-stat-value">{% if next_hops|length > 0 %}{{ (total_sites / next_hops|length) | round(1) }}{% else %}0{% endif %}</div>
+  </div>
+</div>
 
-  {# ── Next hops table ───────────────────────────────────────── #}
-  <div class="cell large-8">
-    {% if not next_hops %}
-    <div class="callout secondary">
-      <i class="fa-solid fa-circle-info"></i> No next hops configured yet.
+<!-- Card Grid -->
+<div class="v2-card-grid">
+  {% for hop in next_hops %}
+  {% set sites_count = hop.sites | length %}
+  <div class="v2-card-grid-item">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+      <span style="width:36px;height:36px;border-radius:9px;background:var(--brand-bg);color:var(--brand-text);display:inline-flex;align-items:center;justify-content:center;font-size:14px">
+        <i class="fa-solid fa-arrows-left-right"></i>
+      </span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:14px;font-weight:700;color:var(--text)">{{ hop.name or 'Unnamed' }}</div>
+        <div style="font-size:11.5px;color:var(--text-muted);font-family:ui-monospace,SFMono-Regular,Menlo,monospace">{{ hop.ip }}</div>
+      </div>
+      <span class="v2-status active">active</span>
     </div>
-    {% else %}
-    <table class="hover stack">
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:12px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border-soft)">
+      <div>
+        <div style="font-size:10.5px;color:var(--text-subtle);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">Sites</div>
+        <div style="font-size:18px;font-weight:700;color:var(--text);margin-top:2px">{{ sites_count }}</div>
+      </div>
+      <div>
+        <div style="font-size:10.5px;color:var(--text-subtle);font-weight:700;text-transform:uppercase;letter-spacing:0.5px">Latency</div>
+        {% set avg = latency_averages[hop.id] %}
+        {% if avg is not none %}
+        <div style="font-size:18px;font-weight:700;color:var(--text);margin-top:2px">{{ avg }}<span style="font-size:11px;color:var(--text-subtle)">ms</span></div>
+        {% else %}
+        <div style="font-size:18px;font-weight:700;color:var(--text-muted);margin-top:2px">—<span style="font-size:11px;color:var(--text-subtle)">ms</span></div>
+        {% endif %}
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:12px">
+      <a href="/sites?hop={{ hop.ip }}" class="v2-btn v2-btn-sm v2-btn-ghost">
+        <i class="fa-solid fa-eye"></i> View sites
+      </a>
+      <span class="v2-ribbon-spacer"></span>
+      <form method="post" action="/next-hops/{{ hop.id }}/delete"
+            onsubmit="return confirm('Delete next hop {{ hop.ip }}?')"
+            style="display:inline">
+        <button type="submit" class="v2-btn v2-btn-sm v2-btn-ghost" {% if sites_count > 0 %}disabled title="In use — remove sites first"{% endif %}">
+          <i class="fa-solid fa-trash"></i>
+        </button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+
+  <button class="v2-card-grid-add" onclick="document.getElementById('add-hop-modal').classList.remove('hidden')">
+    <span style="width:36px;height:36px;border-radius:9px;background:var(--surface-2);display:inline-flex;align-items:center;justify-content:center;font-size:14px">
+      <i class="fa-solid fa-plus"></i>
+    </span>
+    Add next hop
+  </button>
+</div>
+
+<!-- Table -->
+<div class="v2-card">
+  <div class="v2-card-header">
+    <span><i class="fa-solid fa-list"></i> All next hops</span>
+  </div>
+  {% if not next_hops %}
+  <div class="v2-card-body" style="padding:24px;color:var(--text-muted);text-align:center">
+    <i class="fa-solid fa-circle-info" style="font-size:24px;margin-bottom:8px;display:block"></i>
+    No next hops configured yet.
+  </div>
+  {% else %}
+  <div class="v2-card-body-no-pad">
+    <table class="v2-table">
       <thead>
         <tr>
-          <th>IP Address</th>
-          <th>Name</th>
-          <th>Sites using</th>
-          <th>Action</th>
+          <th class="v2-th">IP address</th>
+          <th class="v2-th">Name</th>
+          <th class="v2-th">Sites</th>
+          <th class="v2-th">Latency</th>
+          <th class="v2-th">Status</th>
+          <th class="v2-th" style="text-align:right">Actions</th>
         </tr>
       </thead>
       <tbody>
         {% for hop in next_hops %}
         {% set sites_count = hop.sites | length %}
         <tr>
-          <td><code>{{ hop.ip }}</code></td>
-          <td>
-            {% if hop.name %}{{ hop.name }}{% else %}<span class="subtle">—</span>{% endif %}
+          <td class="v2-td"><span class="v2-hop-chip">{{ hop.ip }}</span></td>
+          <td class="v2-td">{{ hop.name or '—' }}</td>
+          <td class="v2-td"><span style="font-weight:700">{{ sites_count }}</span></td>
+          <td class="v2-td">
+            {% set avg = latency_averages[hop.id] %}
+            {% if avg is not none %}
+            <span style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px">{{ avg }}ms</span>
+            {% else %}
+            <span style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--text-muted)">—</span>
+            {% endif %}
           </td>
-          <td>
-            <span class="label {% if sites_count > 0 %}primary{% else %}secondary{% endif %}">
-              <i class="fa-solid fa-layer-group"></i> {{ sites_count }}
-            </span>
-          </td>
-          <td>
-            <form method="post" action="/next-hops/{{ hop.id }}/delete"
-                  onsubmit="return confirm('Delete next hop {{ hop.ip }}?')">
-              <button class="button tiny alert hollow" type="submit"
-                      {% if sites_count > 0 %}disabled title="In use — remove sites first"{% endif %}>
-                <i class="fa-solid fa-trash"></i> Delete
-              </button>
-            </form>
+          <td class="v2-td"><span class="v2-status active">active</span></td>
+          <td class="v2-td" style="text-align:right">
+            <div style="display:inline-flex;gap:4px">
+              <form method="post" action="/next-hops/{{ hop.id }}/delete"
+                    onsubmit="return confirm('Delete next hop {{ hop.ip }}?')"
+                    style="display:inline">
+                <button type="submit" class="v2-btn v2-btn-sm v2-btn-ghost"
+                        {% if sites_count > 0 %}disabled title="In use — remove sites first"{% endif %}">
+                  <i class="fa-solid fa-trash"></i>
+                </button>
+              </form>
+            </div>
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-    {% endif %}
   </div>
-
+  {% endif %}
 </div>
-{% endblock %}
 
+<!-- Add Next Hop Modal -->
+<div id="add-hop-modal" class="v2-modal-overlay hidden">
+  <div class="v2-modal">
+    <div class="v2-modal-header">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <h3>New next hop</h3>
+          <p>Add a BGP next-hop IP</p>
+        </div>
+        <button onclick="document.getElementById('add-hop-modal').classList.add('hidden')"
+                style="background:transparent;border:none;color:var(--text-muted);cursor:pointer;font-size:16px">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+    </div>
+    <form method="post" action="/next-hops">
+      <div class="v2-modal-body">
+        <div class="v2-field">
+          <label>IP address</label>
+          <input type="text" name="ip" class="v2-input" placeholder="10.10.24.2" required autocomplete="off" />
+        </div>
+        <div class="v2-field">
+          <label>Name <span class="hint">optional</span></label>
+          <input type="text" name="name" class="v2-input" placeholder="Core router" />
+        </div>
+      </div>
+      <div class="v2-modal-footer">
+        <button type="button" class="v2-btn v2-btn-ghost" onclick="document.getElementById('add-hop-modal').classList.add('hidden')">Cancel</button>
+        <button type="submit" class="v2-btn v2-btn-accent">
+          <i class="fa-solid fa-plus"></i> Create
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+{% endblock %}

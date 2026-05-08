@@ -1,64 +1,92 @@
 <!-- SPDX-License-Identifier: GPL-2.0-only -->
 {% extends "base.html" %}
 {% block content %}
-<div class="grid-x grid-margin-x">
-  <div class="cell">
-    <h4><i class="fa-solid fa-scroll"></i> Job History</h4>
 
-    {% if not jobs %}
-    <div class="callout secondary">
-      <i class="fa-solid fa-circle-info"></i> No jobs yet. Trigger a Rediscover from a site page.
-    </div>
-    {% else %}
-    <table class="hover stack">
+<!-- Page Header -->
+<div class="v2-page-header">
+  <div>
+    <h1>Logs</h1>
+    <p>Background jobs · rediscovery, apply, sync</p>
+  </div>
+  <div class="v2-page-header-right">
+    <a href="/logs" class="v2-btn v2-btn-ghost">
+      <i class="fa-solid fa-rotate"></i> Refresh
+    </a>
+  </div>
+</div>
+
+<!-- Jobs Table -->
+<div class="v2-card">
+  <div class="v2-card-header">
+    <span><i class="fa-solid fa-scroll"></i> {{ jobs|length }} jobs</span>
+  </div>
+  {% if not jobs %}
+  <div class="v2-card-body" style="padding:24px;color:var(--text-muted);text-align:center">
+    <i class="fa-solid fa-circle-info" style="font-size:24px;margin-bottom:8px;display:block"></i>
+    No jobs yet. Trigger a Rediscover from a site page.
+  </div>
+  {% else %}
+  <div class="v2-card-body-no-pad">
+    <table class="v2-table">
       <thead>
         <tr>
-          <th>#</th>
-          <th>Type</th>
-          <th>Site</th>
-          <th>Status</th>
-          <th>Started</th>
-          <th>Finished</th>
-          <th></th>
+          <th class="v2-th">#</th>
+          <th class="v2-th">Type</th>
+          <th class="v2-th">Site</th>
+          <th class="v2-th">Status</th>
+          <th class="v2-th">Started</th>
+          <th class="v2-th">Finished</th>
+          <th class="v2-th" style="text-align:right"></th>
         </tr>
       </thead>
       <tbody>
         {% for job in jobs %}
-        <tr>
-          <td>{{ job.id }}</td>
-          <td><code>{{ job.job_type }}</code></td>
-          <td>
-            {% if job.site_id %}
-            <a href="/sites/{{ job.site_id }}">{{ job.site.domain if job.site else ('site #' ~ job.site_id) }}</a>
-            {% else %}—{% endif %}
+        <tr style="cursor:pointer" onclick="window.location.href='/logs/{{ job.id }}'">
+          <td class="v2-td">
+            <span style="color:var(--text-subtle);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px">#{{ job.id }}</span>
           </td>
-          <td>
-            {% if job.status == 'done' %}
-            <span class="label success"><i class="fa-solid fa-circle-check"></i> done</span>
-            {% elif job.status == 'running' %}
-            <span class="label warning"><i class="fa-solid fa-spinner fa-spin"></i> running</span>
-            {% elif job.status == 'failed' %}
-            <span class="label alert"><i class="fa-solid fa-circle-xmark"></i> failed</span>
-            {% elif job.status == 'cancelled' %}
-            <span class="label secondary"><i class="fa-solid fa-ban"></i> cancelled</span>
+          <td class="v2-td">
+            <span style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;background:var(--surface-2);padding:2px 6px;border-radius:4px;border:1px solid var(--border-soft)">{{ job.job_type }}</span>
+          </td>
+          <td class="v2-td">
+            {% if job.site %}
+            <a href="/sites/{{ job.site_id }}" style="color:var(--brand-text);font-weight:600" onclick="event.stopPropagation()">{{ job.site.domain }}</a>
             {% else %}
-            <span class="label secondary">{{ job.status }}</span>
+            <span style="color:var(--text-subtle)">—</span>
             {% endif %}
           </td>
-          <td style="font-size:0.85rem;white-space:nowrap">{{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
-          <td style="font-size:0.85rem;white-space:nowrap">
+          <td class="v2-td">
+            <span class="v2-status {{ job.status }}">
+              {% if job.status == 'done' %}
+              <i class="fa-solid fa-circle-check"></i> done
+              {% elif job.status == 'running' %}
+              <i class="fa-solid fa-spinner fa-spin"></i> running
+              {% elif job.status == 'failed' %}
+              <i class="fa-solid fa-circle-xmark"></i> failed
+              {% elif job.status == 'cancelled' %}
+              <i class="fa-solid fa-ban"></i> cancelled
+              {% else %}
+              {{ job.status }}
+              {% endif %}
+            </span>
+          </td>
+          <td class="v2-td" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--text-muted);white-space:nowrap">
+            {{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') }}
+          </td>
+          <td class="v2-td" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--text-muted);white-space:nowrap">
             {{ job.finished_at.strftime('%Y-%m-%d %H:%M:%S') if job.finished_at else '—' }}
           </td>
-          <td>
-            <a class="button tiny secondary hollow" href="/logs/{{ job.id }}">
-              <i class="fa-solid fa-list"></i> Logs
+          <td class="v2-td" style="text-align:right">
+            <a href="/logs/{{ job.id }}" class="v2-btn v2-btn-sm v2-btn-ghost" onclick="event.stopPropagation()">
+              <i class="fa-solid fa-arrow-right"></i>
             </a>
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
-    {% endif %}
   </div>
+  {% endif %}
 </div>
+
 {% endblock %}

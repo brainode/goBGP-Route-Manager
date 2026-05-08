@@ -18,6 +18,10 @@ status_refresh_lock = Lock()
 status_refresh_stop = Event()
 status_refresh_thread: Optional[Thread] = None
 
+# Signals the periodic latency-check thread to stop
+latency_check_stop = Event()
+latency_check_thread: Optional[Thread] = None
+
 # Prevents concurrent auto-rediscover cycles
 auto_rediscover_lock = Lock()
 

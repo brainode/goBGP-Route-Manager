@@ -15,8 +15,9 @@ from ..config import (
     STATUS_STALE_AFTER_SECONDS,
 )
 from ..database import SessionLocal
-from ..models import Prefix, Site
+from ..models import Job, NextHop, Prefix, Site
 from . import route_service, settings_service
+from .. import state as _state
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -149,3 +150,132 @@ def sync_site_by_id(site_id: int) -> None:
 
     from . import status_service
     status_service.refresh_gobgp_state(f"sync_site:{site_id}")
+
+
+def bulk_reapply_missing_prefixes(site_ids: list[int], job_id: int) -> dict[str, int | bool]:
+    from . import status_service
+    from .job_service import LoggingList, fail_job, finish_job
+
+    db = SessionLocal()
+    result = {"ok": False, "sites": 0, "prefixes_attempted": 0, "prefixes_applied": 0, "prefixes_failed": 0}
+    try:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            return result
+        job.status = "running"
+        db.commit()
+
+        debug = LoggingList(job_id, db)
+        ids = sorted({int(site_id) for site_id in site_ids})
+        debug.append(f"[start] reapply missing prefixes for {len(ids)} selected site(s)")
+
+        sites = (
+            db.query(Site)
+            .options(joinedload(Site.next_hop), joinedload(Site.prefixes))
+            .filter(Site.id.in_(ids))
+            .order_by(Site.domain.asc())
+            .all()
+        )
+        ipv6_enabled = settings_service.get_ipv6_enabled(db)
+        attempted = applied = failed = 0
+
+        for site in sites:
+            result["sites"] += 1
+            if not site.enabled:
+                debug.append(f"[skip] {site.domain}: site is paused")
+                continue
+
+            missing = [
+                prefix
+                for prefix in sorted(site.prefixes, key=lambda p: p.cidr)
+                if route_service.prefix_desired_for_apply(prefix, ipv6_enabled) and not prefix.is_announced
+            ]
+            if not missing:
+                debug.append(f"[skip] {site.domain}: no missing desired prefixes")
+                continue
+
+            debug.append(f"[site] {site.domain}: reapply {len(missing)} missing prefix(es) via {site.next_hop.ip}")
+            for prefix in missing:
+                attempted += 1
+                ok = route_service.apply_prefix(db, site, prefix, announce=True)
+                if ok:
+                    applied += 1
+                    debug.append(f"[ok] {site.domain}: {prefix.cidr} via {site.next_hop.ip}")
+                else:
+                    failed += 1
+                    debug.append(f"[error] {site.domain}: {prefix.cidr} via {site.next_hop.ip}")
+
+        result.update(
+            {
+                "ok": failed == 0,
+                "prefixes_attempted": attempted,
+                "prefixes_applied": applied,
+                "prefixes_failed": failed,
+            }
+        )
+        debug.append(f"[summary] applied {applied}/{attempted}, failed {failed}")
+        finish_job(db, job, ok=failed == 0)
+        status_service.refresh_gobgp_state("bulk_reapply_missing")
+    except Exception:
+        logger.exception("bulk reapply missing prefixes failed job_id=%s", job_id)
+        fail_job(job_id, "bulk reapply missing prefixes raised an exception")
+        result["ok"] = False
+    finally:
+        db.close()
+    return result
+
+
+def change_site_next_hop(db: Session, site: Site, new_next_hop_id: int) -> bool:
+    if site.next_hop_id == new_next_hop_id:
+        return True
+
+    old_next_hop_ip = site.next_hop.ip
+    ipv6_enabled = settings_service.get_ipv6_enabled(db)
+
+    if site.enabled:
+        for prefix in site.prefixes:
+            if not route_service.prefix_desired_for_apply(prefix, ipv6_enabled):
+                continue
+            _state.gobgp.del_route(prefix.cidr, old_next_hop_ip)
+
+    site.next_hop_id = new_next_hop_id
+    db.commit()
+    db.refresh(site)
+    site.next_hop = db.query(NextHop).filter(NextHop.id == new_next_hop_id).first()
+
+    if site.enabled:
+        for prefix in site.prefixes:
+            if not route_service.prefix_desired_for_apply(prefix, ipv6_enabled):
+                continue
+            route_service.apply_prefix(db, site, prefix, announce=True)
+
+    logger.info(
+        "changed next_hop site_id=%s domain=%s old=%s new=%s",
+        site.id, site.domain, old_next_hop_ip, site.next_hop.ip,
+    )
+    return True
+
+
+def bulk_change_next_hop(site_ids: list[int], next_hop_id: int) -> dict[str, int]:
+    db = SessionLocal()
+    try:
+        sites = (
+            db.query(Site)
+            .options(joinedload(Site.next_hop), joinedload(Site.prefixes))
+            .filter(Site.id.in_(site_ids))
+            .all()
+        )
+        changed = 0
+        failed = 0
+        for site in sites:
+            try:
+                if change_site_next_hop(db, site, next_hop_id):
+                    changed += 1
+            except Exception:
+                logger.exception("change next hop failed site_id=%s", site.id)
+                failed += 1
+        from . import status_service
+        status_service.refresh_gobgp_state("bulk_change_next_hop")
+        return {"changed": changed, "failed": failed, "total": len(sites)}
+    finally:
+        db.close()

@@ -1,93 +1,140 @@
 <!-- SPDX-License-Identifier: GPL-2.0-only -->
 {% extends "base.html" %}
 {% block content %}
-<div class="grid-x grid-margin-x">
+<datalist id="all-tag-options">
+  {% for tag in all_tags %}
+  <option value="{{ tag }}"></option>
+  {% endfor %}
+</datalist>
 
-  {# ── Left panel: info + add prefix ─────────────────────────── #}
-  <div class="cell large-4">
-    <div class="card">
-      <div class="card-divider">
-        <i class="fa-solid fa-globe"></i> {{ site.domain }}
+<!-- Page Header -->
+<div class="v2-page-header">
+  <div>
+    <h1>{{ site.domain }}</h1>
+    <p>{{ site.site_type }} · {{ site.next_hop.ip }}{% if site.next_hop.name %} — {{ site.next_hop.name }}{% endif %}</p>
+  </div>
+  <div class="v2-page-header-right">
+    <button id="rediscover-btn" class="v2-btn v2-btn-warning" onclick="startRediscover({{ site.id }})">
+      <i class="fa-solid fa-rotate"></i> Rediscover
+    </button>
+    <form method="post" action="/sites/{{ site.id }}/toggle" style="display:inline">
+      {% if site.enabled %}
+      <button type="submit" class="v2-btn v2-btn-ghost">
+        <i class="fa-solid fa-pause"></i> Pause
+      </button>
+      {% else %}
+      <button type="submit" class="v2-btn v2-btn-success">
+        <i class="fa-solid fa-play"></i> Enable
+      </button>
+      {% endif %}
+    </form>
+    <form method="post" action="/sites/{{ site.id }}/delete" style="display:inline"
+          onsubmit="return confirm('Delete site and withdraw all routes?')">
+      <button type="submit" class="v2-btn v2-btn-danger">
+        <i class="fa-solid fa-trash"></i> Delete
+      </button>
+    </form>
+  </div>
+</div>
+
+<div class="v2-grid-2">
+  <!-- Left: info + add prefix -->
+  <div>
+    <!-- Info card -->
+    <div class="v2-card" style="margin-bottom:14px">
+      <div class="v2-card-header">
+        <span><i class="fa-solid fa-globe"></i> Site info</span>
       </div>
-      <div class="card-section">
-        <div class="status-row">
-          {% if site.display_status == 'active' %}
-          <span class="label success"><i class="fa-solid fa-circle-check"></i> Active</span>
-          {% elif site.display_status == 'partial' %}
-          <span class="label warning"><i class="fa-solid fa-circle-half-stroke"></i> Partial</span>
-          {% elif site.display_status == 'missing' %}
-          <span class="label alert"><i class="fa-solid fa-triangle-exclamation"></i> Missing</span>
-          {% else %}
-          <span class="label alert"><i class="fa-solid fa-circle-pause"></i> Paused</span>
-          {% endif %}
+      <div class="v2-card-body">
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+          <span class="v2-status {{ site.display_status }}">
+            {% if site.display_status == 'active' %}
+            <i class="fa-solid fa-circle-check"></i> Active
+            {% elif site.display_status == 'partial' %}
+            <i class="fa-solid fa-circle-half-stroke"></i> Partial
+            {% elif site.display_status == 'missing' %}
+            <i class="fa-solid fa-triangle-exclamation"></i> Missing
+            {% else %}
+            <i class="fa-solid fa-circle-pause"></i> Paused
+            {% endif %}
+          </span>
           {% if site.asn %}
-          <span class="label primary"><i class="fa-solid fa-network-wired"></i> {{ site.asn }}</span>
+          <span style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--brand-text);background:var(--brand-bg);padding:2px 8px;border-radius:4px;border:1px solid var(--brand-border)"><i class="fa-solid fa-network-wired"></i> {{ site.asn }}</span>
           {% endif %}
           {% if site.status_stale %}
-          <span class="label secondary"><i class="fa-solid fa-clock"></i> stale</span>
+          <span class="v2-status paused"><i class="fa-solid fa-clock"></i> stale</span>
           {% endif %}
         </div>
-        <p style="margin:0.45rem 0 0.15rem;font-size:0.88rem;color:#374151">
-          <i class="fa-solid fa-satellite-dish" style="color:var(--muted);width:16px"></i>
-          <strong>Announced:</strong> {{ site.announced_prefixes_count }} / {{ site.desired_prefixes_count }}
-          <span class="subtle">desired prefixes in goBGP</span>
-        </p>
-        <p style="margin:0.25rem 0 0.15rem;font-size:0.82rem;color:#6b7280">
-          <i class="fa-solid fa-clock-rotate-left" style="color:var(--muted);width:16px"></i>
-          <strong>Last checked:</strong> {{ site.last_checked_at_display or 'never' }}
-        </p>
-        <p style="margin:0.5rem 0 0.15rem;font-size:0.88rem;color:#374151">
-          <i class="fa-solid fa-shapes" style="color:var(--muted);width:16px"></i>
-          <strong>Type:</strong> {{ site.site_type }}
-        </p>
-        <p style="margin:0.5rem 0 0.15rem;font-size:0.88rem;color:#374151">
-          <i class="fa-solid fa-right-left" style="color:var(--muted);width:16px"></i>
-          <strong>Next hop:</strong> <code>{{ site.next_hop.ip }}</code>
-          {% if site.next_hop.name %}<span class="subtle">— {{ site.next_hop.name }}</span>{% endif %}
-        </p>
+
+        <div class="v2-info-row">
+          <span>Announced</span>
+          <span style="color:var(--text)">{{ site.announced_prefixes_count }} / {{ site.desired_prefixes_count }} desired</span>
+
+          <span>Last checked</span>
+          <span>{{ site.last_checked_at_display or 'never' }}</span>
+
+          <span>Type</span>
+          <span>{{ site.site_type }}</span>
+
+          <span>Next hop</span>
+          <span><span class="v2-hop-chip">{{ site.next_hop.ip }}</span> {% if site.next_hop.name %}— {{ site.next_hop.name }}{% endif %}</span>
+
+          <span>Tags</span>
+          <span>
+            {% if site.tags %}
+              {% for tag in site.tags.split(', ') %}
+              <span class="v2-tag">{{ tag }}</span>
+              {% endfor %}
+            {% else %}
+            <span style="color:var(--text-subtle)">—</span>
+            {% endif %}
+          </span>
+        </div>
+
+        <form method="post" action="/sites/{{ site.id }}/tags" style="margin-top:14px">
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" name="tags" id="site-tags-input" value="{{ site.tags or '' }}" placeholder="video, streaming"
+                   class="v2-input" style="flex:1;font-size:12px" list="all-tag-options">
+            <button type="submit" class="v2-btn v2-btn-sm v2-btn-accent">Update</button>
+          </div>
+          {% if all_tags %}
+          <div class="v2-tag-picker">
+            <div class="v2-tag-picker-label">Existing tags</div>
+            <div class="v2-tag-picker-tags">
+              {% for tag in all_tags %}
+              <button type="button" class="v2-tag v2-tag-option" onclick="window.addTagToInput('site-tags-input', {{ tag|tojson }})">{{ tag }}</button>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+        </form>
+
         {% if site.supports_auto_rediscover %}
-        <form method="post" action="/sites/{{ site.id }}/auto-rediscover" style="margin:0.55rem 0 0">
-          <label style="display:inline-flex;align-items:center;gap:0.4rem;font-size:0.86rem;color:#374151;cursor:pointer">
+        <form method="post" action="/sites/{{ site.id }}/auto-rediscover" style="margin-top:12px">
+          <label style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--text-muted);cursor:pointer">
             <input type="checkbox" name="enabled" value="on"
                    {% if site.auto_rediscover_enabled %}checked{% endif %}
-                   onchange="this.form.submit()">
+                   onchange="this.form.submit()"
+                   style="accent-color:var(--brand)">
             Refresh discover every hour
           </label>
         </form>
         {% endif %}
-        <div class="action-group" style="margin-top:0.85rem">
-          <form method="post" action="/sites/{{ site.id }}/toggle">
-            {% if site.enabled %}
-            <button class="button small secondary" type="submit">
-              <i class="fa-solid fa-pause"></i> Pause
-            </button>
-            {% else %}
-            <button class="button small success" type="submit">
-              <i class="fa-solid fa-play"></i> Enable
-            </button>
-            {% endif %}
-          </form>
-          <button id="rediscover-btn" class="button small warning" onclick="startRediscover({{ site.id }})">
-            <i class="fa-solid fa-rotate"></i> Rediscover
-          </button>
-          <form method="post" action="/sites/{{ site.id }}/delete"
-                onsubmit="return confirm('Delete site and withdraw all routes?')">
-            <button class="button small alert hollow" type="submit">
-              <i class="fa-solid fa-trash"></i> Delete
-            </button>
-          </form>
-        </div>
       </div>
     </div>
 
-    <div class="card" style="margin-top:0.85rem">
-      <div class="card-divider"><i class="fa-solid fa-plus"></i> Add Prefix</div>
-      <div class="card-section">
+    <!-- Add Prefix card -->
+    <div class="v2-card">
+      <div class="v2-card-header">
+        <span><i class="fa-solid fa-plus"></i> Add Prefix</span>
+      </div>
+      <div class="v2-card-body">
         <form method="post" action="/sites/{{ site.id }}/prefixes">
-          <label>CIDR
-            <input type="text" name="cidr" placeholder="203.0.113.0/24" required autocomplete="off" />
-          </label>
-          <button class="button success expanded" type="submit">
+          <div class="v2-field">
+            <label>CIDR</label>
+            <input type="text" name="cidr" class="v2-input" placeholder="203.0.113.0/24" required autocomplete="off" />
+          </div>
+          <button type="submit" class="v2-btn v2-btn-accent" style="width:100%">
             <i class="fa-solid fa-plus"></i> Add Prefix
           </button>
         </form>
@@ -95,69 +142,75 @@
     </div>
   </div>
 
-  {# ── Right panel: prefix table ──────────────────────────────── #}
-  <div class="cell large-8">
+  <!-- Right: prefix table -->
+  <div class="v2-card">
+    <div class="v2-card-header">
+      <span><i class="fa-solid fa-list"></i> Prefixes</span>
+    </div>
     {% if not site.prefixes %}
-    <div class="callout secondary">
-      <i class="fa-solid fa-circle-info"></i>
+    <div class="v2-card-body" style="padding:24px;color:var(--text-muted);text-align:center">
+      <i class="fa-solid fa-circle-info" style="font-size:24px;margin-bottom:8px;display:block"></i>
       No prefixes yet. Add one using the form on the left.
     </div>
     {% else %}
-    <table class="hover stack">
-      <thead>
-        <tr>
-          <th>CIDR</th>
-          <th>Source</th>
-          <th>Desired</th>
-          <th>Announced</th>
-          <th>Action</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for p in site.prefixes | sort(attribute='cidr') %}
-        <tr>
-          <td><code>{{ p.cidr }}</code></td>
-          <td>
-            {% if p.source == 'discovery' %}
-            <span class="label primary"><i class="fa-solid fa-magnifying-glass"></i> discovery</span>
-            {% else %}
-            <span class="label secondary"><i class="fa-solid fa-pen"></i> manual</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if p.is_active %}
-            <span class="label success">yes</span>
-            {% else %}
-            <span class="label" style="background:#e5e7eb;color:#6b7280">no</span>
-            {% endif %}
-          </td>
-          <td>
-            {% if p.is_announced %}
-            <span class="label success">yes</span>
-            {% else %}
-            <span class="label {% if p.is_active %}alert{% else %}secondary{% endif %}">
-              {% if p.is_active %}no{% else %}not desired{% endif %}
-            </span>
-            {% endif %}
-            <div style="font-size:0.72rem;color:#6b7280;margin-top:0.2rem">
-              {{ p.last_checked_at_display or 'never' }}{% if p.announced_stale %} · stale{% endif %}
-            </div>
-          </td>
-          <td>
-            <form method="post" action="/prefixes/{{ p.id }}/delete"
-                  onsubmit="return confirm('Remove {{ p.cidr }} and withdraw route?')">
-              <button class="button tiny alert hollow" type="submit">
-                <i class="fa-solid fa-trash"></i> Remove
-              </button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+    <div class="v2-card-body-no-pad">
+      <table class="v2-table">
+        <thead>
+          <tr>
+            <th class="v2-th">CIDR</th>
+            <th class="v2-th">Source</th>
+            <th class="v2-th">Desired</th>
+            <th class="v2-th">Announced</th>
+            <th class="v2-th" style="text-align:right">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in site.prefixes | sort(attribute='cidr') %}
+          <tr>
+            <td class="v2-td">
+              <code style="background:var(--code-bg);border:1px solid var(--code-border);padding:2px 6px;border-radius:4px;font-size:12px">{{ p.cidr }}</code>
+            </td>
+            <td class="v2-td">
+              {% if p.source == 'discovery' %}
+              <span style="font-size:11px;font-weight:600;background:var(--brand-bg);color:var(--brand-text);padding:2px 6px;border-radius:4px"><i class="fa-solid fa-magnifying-glass"></i> discovery</span>
+              {% else %}
+              <span style="font-size:11px;font-weight:600;background:var(--surface-2);color:var(--text-muted);padding:2px 6px;border-radius:4px"><i class="fa-solid fa-pen"></i> manual</span>
+              {% endif %}
+            </td>
+            <td class="v2-td">
+              {% if p.is_active %}
+              <span class="v2-status active" style="font-size:10px">yes</span>
+              {% else %}
+              <span class="v2-status paused" style="font-size:10px">no</span>
+              {% endif %}
+            </td>
+            <td class="v2-td">
+              {% if p.is_announced %}
+              <span class="v2-status active" style="font-size:10px">yes</span>
+              {% else %}
+              <span class="v2-status {% if p.is_active %}missing{% else %}paused{% endif %}" style="font-size:10px">
+                {% if p.is_active %}no{% else %}not desired{% endif %}
+              </span>
+              {% endif %}
+              <div style="font-size:11px;color:var(--text-subtle);margin-top:3px">
+                {{ p.last_checked_at_display or 'never' }}{% if p.announced_stale %} · stale{% endif %}
+              </div>
+            </td>
+            <td class="v2-td" style="text-align:right">
+              <form method="post" action="/prefixes/{{ p.id }}/delete" style="display:inline"
+                    onsubmit="return confirm('Remove {{ p.cidr }} and withdraw route?')">
+                <button type="submit" class="v2-btn v2-btn-sm v2-btn-ghost">
+                  <i class="fa-solid fa-trash"></i>
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
     {% endif %}
   </div>
-
 </div>
 
 <script>
@@ -198,4 +251,3 @@ async function startRediscover(siteId) {
 }
 </script>
 {% endblock %}
-

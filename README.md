@@ -8,6 +8,8 @@
 
 Web UI + API for managing goBGP routes by domain/site, with SQLite state and Docker-based deployment.
 
+![goBGP Route Manager UI](screenshot.png)
+
 ## Why This Project
 
 Managing routes via ad-hoc shell scripts does not scale well. This project provides:
@@ -20,13 +22,16 @@ Managing routes via ad-hoc shell scripts does not scale well. This project provi
 
 ## Features
 
-- Site inventory table: `domain`, `ASN`, `prefix count`, `next-hop`, `enabled`
+- Site inventory table: `domain`, `ASN`, `prefix count`, `next-hop`, `enabled`, **`tags`**
 - Prefix management per site
 - Next-hop management
+- **Bulk operations**: change next-hop for selected sites, mass add/set tags
+- **Tag-based filtering** on the sites list
 - goBGP status page (gRPC/CLI connectivity)
 - Discovery modes in Settings
 - One-click maintenance actions (purge inactive records)
 - Background route apply/withdraw jobs
+- Full configuration export/import (JSON, includes tags)
 - Multi-arch container builds for `amd64` and `arm64`
 
 ## Architecture
@@ -43,7 +48,9 @@ Browser
 
 ```text
 app/
-  main.py                 # Web routes and API handlers
+  main.py                 # App bootstrap, router mounting, lifespan
+  routers/                # FastAPI route handlers (sites, next_hops, settings, logs, health)
+  services/               # Business logic (site_service, route_service, rediscover_service, settings_service, status_service, job_service)
   gobgp_client.py         # goBGP integration (gRPC/CLI)
   discovery.py            # domain -> ASN -> prefixes pipeline
   models.py               # SQLAlchemy models
@@ -303,22 +310,38 @@ Copy `.env.example` to `.env` and set values.
 
 ## API (Current)
 
-- `GET /health`
-- `GET /api/sites`
+### Sites
 - `GET /sites`
 - `POST /sites`
 - `POST /sites/{site_id}/toggle`
 - `POST /sites/{site_id}/rediscover`
 - `POST /sites/{site_id}/delete`
 - `POST /sites/{site_id}/prefixes`
+- `POST /sites/{site_id}/tags`
+- `POST /sites/bulk-change-next-hop`
+- `POST /sites/bulk-add-tags`
+- `POST /sites/bulk-set-tags`
+- `GET /sites/{site_id}`
+
+### Prefixes
 - `POST /prefixes/{prefix_id}/delete`
+
+### Next Hops
 - `GET /next-hops`
 - `POST /next-hops`
 - `POST /next-hops/{next_hop_id}/delete`
+
+### Settings
 - `GET /settings`
 - `POST /settings/discovery-mode`
 - `POST /settings/apply-current`
 - `POST /settings/rediscover-all`
+- `GET /settings/export`
+- `POST /settings/import`
+
+### Other
+- `GET /health`
+- `GET /api/sites`
 
 ## Security Notes
 
