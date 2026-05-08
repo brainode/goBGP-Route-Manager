@@ -15,6 +15,20 @@ class NextHop(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
 
     sites: Mapped[list["Site"]] = relationship("Site", back_populates="next_hop")
+    latency_measurements: Mapped[list["LatencyMeasurement"]] = relationship(
+        "LatencyMeasurement", back_populates="next_hop", cascade="all, delete-orphan"
+    )
+
+
+class LatencyMeasurement(Base):
+    __tablename__ = "latency_measurements"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    next_hop_id: Mapped[int] = mapped_column(ForeignKey("next_hops.id", ondelete="CASCADE"), nullable=False, index=True)
+    latency_ms: Mapped[float | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    next_hop: Mapped[NextHop] = relationship("NextHop", back_populates="latency_measurements")
 
 
 class Site(Base):

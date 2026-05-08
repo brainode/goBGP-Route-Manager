@@ -11,7 +11,7 @@ from sqlalchemy.orm import joinedload  # re-exported for backward compat
 
 from .database import Base, SessionLocal, engine, get_db
 from . import state as _state
-from .services import rediscover_service, route_service, settings_service, site_service, status_service
+from .services import latency_service, rediscover_service, route_service, settings_service, site_service, status_service
 from .routers import health, logs, next_hops, settings, sites
 
 
@@ -49,8 +49,10 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     _ensure_runtime_schema()
     status_service.start_background_refresh()
+    latency_service.start_latency_worker()
     yield
     _state.status_refresh_stop.set()
+    _state.latency_check_stop.set()
     _state.shutdown_rediscover_executor()
 
 

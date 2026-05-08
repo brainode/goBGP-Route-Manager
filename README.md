@@ -8,6 +8,8 @@
 
 Web UI + API for managing goBGP routes by domain/site, with SQLite state and Docker-based deployment.
 
+![goBGP Route Manager UI](screenshot.png)
+
 ## Why This Project
 
 Managing routes via ad-hoc shell scripts does not scale well. This project provides:

@@ -166,7 +166,7 @@
 <!-- Sites Table -->
 <div class="v2-card">
   <div class="v2-card-header">
-    <span><i class="fa-solid fa-layer-group"></i> {{ sites|length }} sites</span>
+    <span id="sites-table-header-count"><i class="fa-solid fa-layer-group"></i> {{ sites|length }} sites</span>
   </div>
   {% if not sites %}
   <div class="v2-card-body" style="padding:24px;color:var(--text-muted);text-align:center">
@@ -613,6 +613,18 @@
       cb.disabled = row.style.display === 'none';
     });
     updateBulkRibbon();
+
+    const visibleRows = document.querySelectorAll('.site-row:not([style*="display: none"])');
+    const countEl = document.getElementById('sites-table-header-count');
+    if (countEl) {
+      const total = document.querySelectorAll('.site-row').length;
+      const visible = visibleRows.length;
+      if (visible === total) {
+        countEl.innerHTML = '<i class="fa-solid fa-layer-group"></i> ' + total + ' sites';
+      } else {
+        countEl.innerHTML = '<i class="fa-solid fa-layer-group"></i> ' + visible + ' of ' + total + ' sites';
+      }
+    }
   }
 
   /* ── Bulk selection ───────────────────────────────────── */

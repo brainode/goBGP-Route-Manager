@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import NextHop, Site
-from ..services import settings_service
+from ..services import latency_service, settings_service
 
 templates = Jinja2Templates(directory="app/templates")
 router = APIRouter()
@@ -19,7 +19,15 @@ router = APIRouter()
 @router.get("/next-hops", response_class=HTMLResponse)
 def list_next_hops(request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
     next_hops = db.query(NextHop).order_by(NextHop.ip.asc()).all()
-    context = {"request": request, "next_hops": next_hops, "title": "Next Hops"}
+    latency_averages = {hop.id: latency_service.get_average_latency(db, hop.id) for hop in next_hops}
+    reachable_count = sum(1 for v in latency_averages.values() if v is not None)
+    context = {
+        "request": request,
+        "next_hops": next_hops,
+        "latency_averages": latency_averages,
+        "reachable_count": reachable_count,
+        "title": "Next Hops",
+    }
     context.update(settings_service.theme_context(db))
     return templates.TemplateResponse("next_hops.html", context)
 

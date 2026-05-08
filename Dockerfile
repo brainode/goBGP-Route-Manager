@@ -10,7 +10,7 @@ ARG TARGETARCH
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 RUN GOBGP_ARCH="${TARGETARCH:-amd64}" \
